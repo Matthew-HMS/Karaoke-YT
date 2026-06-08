@@ -1,0 +1,28 @@
+# systemd unit to keep SingAlong running on the VM and restart it on crash/boot.
+# Install:
+#   sudo cp deploy/singalong.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now singalong
+# View logs:  journalctl -u singalong -f
+#
+# Adjust User, WorkingDirectory, and the YOUTUBE_API_KEY below for your VM.
+
+[Unit]
+Description=SingAlong karaoke server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/karaoke
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=DB_PATH=/home/ubuntu/karaoke/singalong.db
+Environment=YOUTUBE_API_KEY=replace-with-your-key
+# Build once before starting (npm run build), then this runs the prod server.
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

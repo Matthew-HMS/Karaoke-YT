@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+AGENTS.md
+CLAUDE.md
+# SingAlong runtime data
+singalong.db
+singalong.db-*
+.env.local

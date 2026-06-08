@@ -1,0 +1,13 @@
+# Caddy reverse proxy for SingAlong.
+# Caddy auto-provisions a free Let's Encrypt HTTPS certificate for your domain
+# and transparently proxies WebSocket (Socket.IO) traffic — no extra config
+# needed for upgrades.
+#
+# Replace the domain below with your own (e.g. a free DuckDNS subdomain like
+# singalong.duckdns.org). Then: sudo caddy run --config /path/to/Caddyfile
+# or install Caddy as a service and put this at /etc/caddy/Caddyfile.
+
+your-subdomain.duckdns.org {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}
