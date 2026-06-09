@@ -14,6 +14,15 @@ import { formatTime } from "@/lib/format";
 import { getSocket } from "@/lib/socket";
 import { useRoom } from "@/lib/useRoom";
 
+// Safari still exposes fullscreen only under webkit-prefixed names.
+type FsDocument = Document & {
+  webkitFullscreenElement?: Element;
+  webkitExitFullscreen?: () => Promise<void>;
+};
+type FsElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void>;
+};
+
 export default function HostPage() {
   const code = String(useParams().room || "").toUpperCase();
   const { state, livePlayer, sendCommand, reportState, notifyEnded } =
@@ -66,6 +75,33 @@ export default function HostPage() {
     }, 3500);
     return () => clearTimeout(t);
   }, [blockedId, nowPlaying, sendCommand]);
+
+  // Fullscreen the whole host page (keeps the QR + up-next visible). Includes
+  // the webkit-prefixed calls Safari still requires.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () =>
+      setIsFullscreen(
+        !!(document.fullscreenElement ||
+          (document as FsDocument).webkitFullscreenElement)
+      );
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("webkitfullscreenchange", onChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("webkitfullscreenchange", onChange);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    const doc = document as FsDocument;
+    const el = document.documentElement as FsElement;
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      (doc.exitFullscreen ?? doc.webkitExitFullscreen)?.call(doc);
+    } else {
+      (el.requestFullscreen ?? el.webkitRequestFullscreen)?.call(el);
+    }
+  };
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-black">
@@ -192,6 +228,14 @@ export default function HostPage() {
             {formatTime(player?.durationSec ?? 0)}
           </span>
         </div>
+        <button
+          type="button"
+          onClick={toggleFullscreen}
+          className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-sm font-semibold transition hover:bg-white/20 active:scale-95"
+          aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
+        >
+          {isFullscreen ? "⤢" : "⛶"}
+        </button>
       </footer>
     </main>
   );

@@ -1,9 +1,9 @@
-// SQLite persistence for the two things that should outlive a server restart:
-// played-song history and starred favorites. Everything else (live rooms) is
-// in-memory. One file on disk — perfect for a single VM, no external service.
+// SQLite persistence for the one thing that should outlive a server restart and
+// belongs to a person: each user's starred favorites. (Per-room "recent" is now
+// in-memory on the room itself — see lib/rooms.ts — since rooms are ephemeral.)
+// One file on disk — perfect for a single VM, no external service.
 
 import Database from "better-sqlite3";
-import { randomUUID } from "crypto";
 import path from "path";
 
 export type SongMeta = {
@@ -16,78 +16,69 @@ export type SongMeta = {
 const DB_PATH =
   process.env.DB_PATH || path.join(process.cwd(), "singalong.db");
 
-// Module-level singleton. Both the custom server and the Next API routes import
-// this; each ends up with its own connection to the same file, which SQLite
-// handles fine — WAL mode keeps concurrent reads/writes happy.
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
+// Favorites are scoped to a user (Google account id). Primary key is the
+// (userId, videoId) pair so two users can each star the same song.
 db.exec(`
-  CREATE TABLE IF NOT EXISTS history (
-    id          TEXT PRIMARY KEY,
+  CREATE TABLE IF NOT EXISTS favorite (
+    userId      TEXT NOT NULL,
     videoId     TEXT NOT NULL,
     title       TEXT NOT NULL,
     thumbnail   TEXT NOT NULL,
     durationSec INTEGER NOT NULL,
-    singer      TEXT NOT NULL,
-    playedAt    INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS favorite (
-    videoId     TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
-    thumbnail   TEXT NOT NULL,
-    durationSec INTEGER NOT NULL,
-    starredAt   INTEGER NOT NULL
+    starredAt   INTEGER NOT NULL,
+    PRIMARY KEY (userId, videoId)
   );
 `);
 
-const insertHistory = db.prepare(
-  `INSERT INTO history (id, videoId, title, thumbnail, durationSec, singer, playedAt)
-   VALUES (@id, @videoId, @title, @thumbnail, @durationSec, @singer, @playedAt)`
-);
-
-export function logPlay(song: SongMeta, singer: string): void {
-  insertHistory.run({
-    id: randomUUID(),
-    ...song,
-    singer,
-    playedAt: Date.now(),
-  });
-}
-
-// Most-recently played, de-duplicated by video (latest play wins).
-const recentStmt = db.prepare(
-  `SELECT videoId, title, thumbnail, durationSec, MAX(playedAt) AS playedAt
-   FROM history GROUP BY videoId ORDER BY playedAt DESC LIMIT ?`
-);
-
-export function recentlyPlayed(limit = 30): SongMeta[] {
-  return recentStmt.all(limit) as SongMeta[];
+// Migration for databases created before favorites were user-scoped: if the
+// old single-column-PK table exists without userId, recreate it. Favorites are
+// disposable party data, so dropping legacy global rows is acceptable.
+const cols = db.prepare(`PRAGMA table_info(favorite)`).all() as {
+  name: string;
+}[];
+if (!cols.some((c) => c.name === "userId")) {
+  db.exec(`
+    DROP TABLE favorite;
+    CREATE TABLE favorite (
+      userId      TEXT NOT NULL,
+      videoId     TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      thumbnail   TEXT NOT NULL,
+      durationSec INTEGER NOT NULL,
+      starredAt   INTEGER NOT NULL,
+      PRIMARY KEY (userId, videoId)
+    );
+  `);
 }
 
 const listFavStmt = db.prepare(
   `SELECT videoId, title, thumbnail, durationSec FROM favorite
-   ORDER BY starredAt DESC`
+   WHERE userId = ? ORDER BY starredAt DESC`
 );
 
-export function listFavorites(): SongMeta[] {
-  return listFavStmt.all() as SongMeta[];
+export function listFavorites(userId: string): SongMeta[] {
+  return listFavStmt.all(userId) as SongMeta[];
 }
 
 const addFavStmt = db.prepare(
-  `INSERT INTO favorite (videoId, title, thumbnail, durationSec, starredAt)
-   VALUES (@videoId, @title, @thumbnail, @durationSec, @starredAt)
-   ON CONFLICT(videoId) DO NOTHING`
+  `INSERT INTO favorite (userId, videoId, title, thumbnail, durationSec, starredAt)
+   VALUES (@userId, @videoId, @title, @thumbnail, @durationSec, @starredAt)
+   ON CONFLICT(userId, videoId) DO NOTHING`
 );
 
-export function addFavorite(song: SongMeta): void {
-  addFavStmt.run({ ...song, starredAt: Date.now() });
+export function addFavorite(userId: string, song: SongMeta): void {
+  addFavStmt.run({ userId, ...song, starredAt: Date.now() });
 }
 
-const removeFavStmt = db.prepare(`DELETE FROM favorite WHERE videoId = ?`);
+const removeFavStmt = db.prepare(
+  `DELETE FROM favorite WHERE userId = ? AND videoId = ?`
+);
 
-export function removeFavorite(videoId: string): void {
-  removeFavStmt.run(videoId);
+export function removeFavorite(userId: string, videoId: string): void {
+  removeFavStmt.run(userId, videoId);
 }
 
 export default db;

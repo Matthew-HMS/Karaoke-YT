@@ -21,6 +21,7 @@ type YTPlayer = {
   seekTo: (seconds: number, allowSeekAhead: boolean) => void;
   getCurrentTime: () => number;
   getDuration: () => number;
+  getPlayerState: () => number;
   destroy: () => void;
 };
 
@@ -91,16 +92,29 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
     let cancelled = false;
     let reportTimer: ReturnType<typeof setInterval>;
 
+    const targetNode = document.createElement("div");
+    if (containerRef.current) {
+      containerRef.current.appendChild(targetNode);
+    }
+
     loadYouTubeApi().then(() => {
       if (cancelled || !containerRef.current || !window.YT) return;
 
-      playerRef.current = new window.YT.Player(containerRef.current, {
+      playerRef.current = new window.YT.Player(targetNode, {
+        videoId: videoId || undefined,
         width: "100%",
         height: "100%",
-        playerVars: { autoplay: 1, controls: 0, rel: 0, modestbranding: 1 },
+        playerVars: { 
+          autoplay: 1, 
+          controls: 0, 
+          rel: 0, 
+          modestbranding: 1,
+          origin: window.location.origin,
+          enablejsapi: 1
+        },
         events: {
           onReady: () => {
-            if (videoId) {
+            if (videoId && currentVideo.current !== videoId) {
               currentVideo.current = videoId;
               playerRef.current?.loadVideoById(videoId);
             }
@@ -125,16 +139,25 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
               });
             }
           },
-          onError: () => {
-            if (currentVideo.current) cbs.current.onError(currentVideo.current);
+          onError: (e: { data: number }) => {
+            console.error("YouTube Player Error Code:", e.data);
+            // 101, 150 = "Video cannot be embedded by request of the owner"
+            // We only want to skip when we know for sure it's blocked.
+            if (currentVideo.current && (e.data === 101 || e.data === 150)) {
+              cbs.current.onError(currentVideo.current);
+            }
           },
         },
       });
 
-      // Report playback position once per second for the live scrub bar.
+      // Report playback position once per second for the live scrub bar — but
+      // ONLY while actually playing. Otherwise this would clobber the "paused"
+      // status (from onStateChange) with "playing" a second later, flipping the
+      // remote's play/pause button so pause couldn't be resumed.
       reportTimer = setInterval(() => {
         const p = playerRef.current;
-        if (!p || !currentVideo.current) return;
+        if (!p || !currentVideo.current || !window.YT) return;
+        if (p.getPlayerState() !== window.YT.PlayerState.PLAYING) return;
         const duration = p.getDuration();
         if (!duration) return;
         cbs.current.onReport({
@@ -148,7 +171,16 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
     return () => {
       cancelled = true;
       clearInterval(reportTimer);
-      playerRef.current?.destroy();
+      try {
+        playerRef.current?.destroy();
+      } catch {
+        // Ignore errors during destroy
+      }
+      if (containerRef.current) {
+        try {
+          containerRef.current.innerHTML = "";
+        } catch {}
+      }
       playerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

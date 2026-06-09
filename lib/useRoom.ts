@@ -59,8 +59,13 @@ export function useRoom(code: string, role: "host" | "remote", name?: string) {
     reorder: (order: string[]) => socket.emit("queue:reorder", { code, order }),
     sendCommand: (cmd: PlayerCommand) =>
       socket.emit("player:command", { code, ...cmd }),
-    reportState: (s: PlayerState) =>
-      socket.emit("player:report", { code, state: s }),
+    reportState: (s: PlayerState) => {
+      // The server relays player:state to *other* clients, so the host never
+      // hears its own reports — update our local copy directly so the host's
+      // own progress bar advances too.
+      setLivePlayer(s);
+      socket.emit("player:report", { code, state: s });
+    },
     notifyEnded: () => socket.emit("player:ended", { code }),
   };
 }

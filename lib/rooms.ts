@@ -16,8 +16,11 @@ type Room = {
   queue: QueueItem[];
   nowPlaying: QueueItem | null;
   playerState: PlayerState;
+  history: QueueItem[]; // played songs (most-recent first), capped, in-memory
   hostSocketId: string | null;
 };
+
+const MAX_HISTORY = 50;
 
 const rooms = new Map<string, Room>();
 
@@ -40,6 +43,7 @@ export function createRoom(code?: string): Room {
     queue: [],
     nowPlaying: null,
     playerState: { ...DEFAULT_PLAYER_STATE },
+    history: [],
     hostSocketId: null,
   };
   rooms.set(room.code, room);
@@ -64,6 +68,7 @@ export function toRoomState(room: Room): RoomState {
     queue: room.queue,
     nowPlaying: room.nowPlaying,
     playerState: room.playerState,
+    history: room.history,
   };
 }
 
@@ -101,6 +106,10 @@ export function reorderQueue(room: Room, order: string[]): void {
 // Move the head of the queue into nowPlaying. Returns the song that started,
 // or null if the queue was empty (player goes idle).
 export function advanceQueue(room: Room): QueueItem | null {
+  // The song that was playing is now part of this room's history.
+  if (room.nowPlaying) {
+    room.history = [room.nowPlaying, ...room.history].slice(0, MAX_HISTORY);
+  }
   const next = room.queue.shift() ?? null;
   room.nowPlaying = next;
   room.playerState = {

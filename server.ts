@@ -22,8 +22,6 @@ import {
   setPlayerState,
   toRoomState,
 } from "./lib/rooms";
-import { logPlay } from "./lib/db";
-import type { QueueItem } from "./lib/types";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST || "0.0.0.0";
@@ -46,20 +44,6 @@ app.prepare().then(() => {
     if (room) io.to(code).emit("room:state", toRoomState(room));
   };
 
-  // Record a play to history when a different song becomes now-playing.
-  const logIfNewSong = (prevId: string | undefined, current: QueueItem | null) => {
-    if (current && current.id !== prevId) {
-      logPlay(
-        {
-          videoId: current.videoId,
-          title: current.title,
-          thumbnail: current.thumbnail,
-          durationSec: current.durationSec,
-        },
-        current.singer
-      );
-    }
-  };
 
   io.on("connection", (socket) => {
     let joinedCode: string | null = null;
@@ -77,9 +61,7 @@ app.prepare().then(() => {
     socket.on("queue:add", ({ code, item }) => {
       const room = getRoom(code);
       if (!room) return;
-      const prevId = room.nowPlaying?.id;
       addToQueue(room, item, socket.id);
-      logIfNewSong(prevId, room.nowPlaying);
       broadcastState(code);
     });
 
@@ -102,11 +84,7 @@ app.prepare().then(() => {
       const room = getRoom(code);
       if (!room) return;
       if (cmd.cmd === "skip" || cmd.cmd === "restart") {
-        if (cmd.cmd === "skip") {
-          const prevId = room.nowPlaying?.id;
-          advanceQueue(room);
-          logIfNewSong(prevId, room.nowPlaying);
-        }
+        if (cmd.cmd === "skip") advanceQueue(room);
         broadcastState(code);
       }
       // Always relay to the host so it can act on the iframe.
@@ -125,9 +103,7 @@ app.prepare().then(() => {
     socket.on("player:ended", ({ code }) => {
       const room = getRoom(code);
       if (!room) return;
-      const prevId = room.nowPlaying?.id;
       advanceQueue(room);
-      logIfNewSong(prevId, room.nowPlaying);
       broadcastState(code);
     });
 

@@ -23,6 +23,7 @@ export type RoomState = {
   queue: QueueItem[];
   nowPlaying: QueueItem | null;
   playerState: PlayerState;
+  history: QueueItem[]; // songs already played in THIS room, most-recent first
 };
 
 export type PlayerCommand =

@@ -1,8 +1,7 @@
 # 🎤 SingAlong
 
 An embed-based karaoke web app. A TV/laptop shows the **host screen**; guests
-join from their **phones** to search YouTube and queue songs. Unlike
-[pikaraoke](https://github.com/vicwomg/pikaraoke), it **never downloads** — it
+join from their **phones** to search YouTube and queue songs. It **never downloads** — it
 streams via the YouTube IFrame Player API, so there's no wait and you can
 instantly **seek to any part** of a song.
 
