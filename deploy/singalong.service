@@ -1,11 +1,14 @@
 # systemd unit to keep SingAlong running on the VM and restart it on crash/boot.
 # Install:
 #   sudo cp deploy/singalong.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/singalong.service   # set User + paths for your VM
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now singalong
 # View logs:  journalctl -u singalong -f
 #
-# Adjust User, WorkingDirectory, and the YOUTUBE_API_KEY below for your VM.
+# All secrets/config (YOUTUBE_API_KEY, AUTH_*, AUTH_URL, PORT, DB_PATH) live in
+# your .env.local — EnvironmentFile below loads them into the process, so you do
+# NOT list them here. Just keep .env.local up to date.
 
 [Unit]
 Description=SingAlong karaoke server
@@ -15,16 +18,11 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/karaoke
-Environment=NODE_ENV=production
-Environment=PORT=3000
-Environment=DB_PATH=/home/ubuntu/karaoke/singalong.db
-Environment=YOUTUBE_API_KEY=replace-with-your-key
-# Google sign-in (Auth.js). AUTH_URL must be your public HTTPS domain so the
-# OAuth callback is correct behind Caddy.
-Environment=AUTH_SECRET=replace-with-openssl-rand-base64-32
-Environment=AUTH_GOOGLE_ID=replace-with-client-id
-Environment=AUTH_GOOGLE_SECRET=replace-with-client-secret
-Environment=AUTH_URL=https://your-subdomain.duckdns.org
+# Single source of truth for all env vars (KEY=VALUE lines; the file's
+# `#` comments are fine). Don't also list Environment= lines — pick one.
+EnvironmentFile=/home/ubuntu/karaoke/.env.local
+# yt-dlp may not be on the service's PATH; point at it explicitly.
+Environment=YTDLP_PATH=/usr/local/bin/yt-dlp
 # Build once before starting (npm run build), then this runs the prod server.
 ExecStart=/usr/bin/npm run start
 Restart=on-failure

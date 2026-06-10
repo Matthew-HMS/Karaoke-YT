@@ -1,0 +1,36 @@
+name: Deploy to Oracle VM
+
+# Deploys on every push to main (and on manual trigger). The runner just SSHes
+# into the VM and runs the update steps there — the app is built ON the VM so
+# the native better-sqlite3 binary and the custom tsx server match the VM's arch.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once; let an in-flight one finish.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH → pull, build, restart
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          script_stop: true # stop (and fail) on the first error
+          script: |
+            cd ~/karaoke
+            git fetch origin main
+            git reset --hard origin/main          # clean checkout (.env.local & db are gitignored, untouched)
+            npm ci
+            npm run build                         # if this fails, the old build keeps running
+            sudo systemctl restart singalong
+            sleep 2
+            systemctl is-active singalong         # fails the job if it didn't come back up
