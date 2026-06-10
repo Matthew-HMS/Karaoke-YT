@@ -7,7 +7,9 @@ import type { SearchResult } from "./youtube";
 
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const MAX_RESULTS = 20;
+const MAX_PLAYLIST = 50; // don't let one playlist flood the queue
 const TIMEOUT_MS = 12000;
+const PLAYLIST_TIMEOUT_MS = 25000;
 
 type FlatEntry = {
   id?: string;
@@ -15,18 +17,14 @@ type FlatEntry = {
   duration?: number;
 };
 
-export function searchViaYtDlp(
-  query: string,
-  karaokeOnly: boolean
-): Promise<SearchResult[]> {
-  const q = karaokeOnly ? `${query} karaoke` : query;
-  const term = `ytsearch${MAX_RESULTS}:${q}`;
-
+// Run yt-dlp with `--flat-playlist -J` for a target (search term or URL) and
+// parse the flat entries into SearchResults.
+function runFlat(target: string, timeout: number): Promise<SearchResult[]> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       YTDLP,
-      [term, "--flat-playlist", "-J", "--no-warnings", "--no-playlist"],
-      { timeout: TIMEOUT_MS }
+      [target, "--flat-playlist", "-J", "--no-warnings"],
+      { timeout }
     );
 
     let out = "";
@@ -58,4 +56,21 @@ export function searchViaYtDlp(
       }
     });
   });
+}
+
+export function searchViaYtDlp(
+  query: string,
+  karaokeOnly: boolean
+): Promise<SearchResult[]> {
+  const q = karaokeOnly ? `${query} karaoke` : query;
+  return runFlat(`ytsearch${MAX_RESULTS}:${q}`, TIMEOUT_MS);
+}
+
+// Fetch a playlist's videos (capped) via yt-dlp.
+export async function getPlaylistViaYtDlp(
+  playlistId: string
+): Promise<SearchResult[]> {
+  const url = `https://www.youtube.com/playlist?list=${playlistId}`;
+  const results = await runFlat(url, PLAYLIST_TIMEOUT_MS);
+  return results.slice(0, MAX_PLAYLIST);
 }

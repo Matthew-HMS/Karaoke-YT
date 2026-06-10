@@ -11,6 +11,7 @@ import {
   PlayerState,
   QueueItem,
   RoomState,
+  SfxName,
 } from "./types";
 
 export function useRoom(code: string, role: "host" | "remote", name?: string) {
@@ -67,5 +68,6 @@ export function useRoom(code: string, role: "host" | "remote", name?: string) {
       socket.emit("player:report", { code, state: s });
     },
     notifyEnded: () => socket.emit("player:ended", { code }),
+    sendSfx: (name: SfxName) => socket.emit("sfx:play", { code, name }),
   };
 }

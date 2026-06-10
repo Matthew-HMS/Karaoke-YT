@@ -7,23 +7,36 @@ instantly **seek to any part** of a song.
 
 ## Features
 
-- 📺 **Host screen** — plays the video, shows now-playing + up-next, and a QR
-  code so guests can join by scanning.
-- 📱 **Phone remote** — search YouTube (karaoke-only toggle) or paste a link,
-  add songs with your name, control playback, and **scrub/seek live**.
+- 📺 **Host screen** — plays the video, shows now-playing + up-next, a QR code
+  to join, and a **fullscreen** toggle for the TV.
+- 📱 **Phone remote** — search, queue songs with your name, control playback,
+  and **scrub/seek live**.
+- 🔎 **Quota-free search** via **yt-dlp**, with automatic fallback to the YouTube
+  Data API. Paste a single video link **or a whole playlist**.
 - 🔄 **Real-time sync** over Socket.IO (queue, play/pause/skip/seek).
-- ⭐ **Favorites & Recently played** — persisted in SQLite for one-tap re-adding.
+- ↕️ **Drag-to-reorder** the queue (drag the ⠿ grip).
+- 👤 **Sign in with Google** (Auth.js) to get **personal favorites**; "Recent"
+  is each room's own play history. Guests can use everything without an account.
+- 🎲 **Random favorite** — one tap to queue a random song you've starred.
+- 🎉 **Reactions** — phones trigger sound effects (applause, airhorn, ta-da,
+  drumroll, sad-trombone) that play on the TV, synthesized in-browser.
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
 
 ## Architecture
 
 - **Next.js (App Router) + React + Tailwind** UI.
 - **Custom server** (`server.ts`) wraps Next.js and attaches **Socket.IO**.
-  Live room state is in-memory (`lib/rooms.ts`); a party is short-lived.
-- **SQLite** (`lib/db.ts`) persists history + favorites (single file, no
-  external service).
-- **YouTube IFrame Player API** plays + seeks on the host. **YouTube Data API
-  v3** powers search (server-side, key hidden).
+  Live room state (queue, now-playing, per-room recent) is in-memory
+  (`lib/rooms.ts`); a party is short-lived.
+- **Search:** `lib/ytsearch.ts` shells out to **yt-dlp** (no API quota);
+  `lib/search.ts` falls back to the **YouTube Data API** if yt-dlp fails, and
+  caches results.
+- **Auth:** **Auth.js** with Google (`auth.ts`); favorites are scoped to the
+  signed-in user.
+- **SQLite** (`lib/db.ts`) persists per-user favorites (single file, no external
+  service).
+- **YouTube IFrame Player API** plays + seeks on the host. **Web Audio API**
+  (`lib/sfx.ts`) synthesizes the sound effects.
 
 > Why a custom server (not Vercel)? WebSockets need a long-lived process.
 > Serverless can't hold them — so we run one Node process on a VM.
@@ -31,44 +44,56 @@ instantly **seek to any part** of a song.
 ## Local development
 
 ```bash
-cp .env.local.example .env.local   # add YOUTUBE_API_KEY (optional, for search)
+cp .env.local.example .env.local   # fill in keys (see below)
 npm install
+brew install yt-dlp                # for quota-free search (or apt/pipx on Linux)
 npm run dev                        # http://localhost:3000
 ```
 
 Open the host on your laptop and the remote on your phone (same Wi-Fi) using
-your machine's LAN IP, e.g. `http://192.168.1.50:3000`. The host screen's QR
-code links straight to the remote.
+your machine's LAN IP, e.g. `http://192.168.1.50:3000` (add it to
+`allowedDevOrigins` in `next.config.ts`). The host screen's QR code links to the
+remote.
 
-- **Search** needs a free YouTube Data API key — see `.env.local.example`.
-- **Pasting links** works without any key.
+Environment (`.env.local`):
+- `YOUTUBE_API_KEY` — fallback search + pasted-link metadata (yt-dlp covers the
+  main search path).
+- `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL` — Google
+  sign-in. `AUTH_URL` must be your public origin (required behind a proxy/tunnel).
 
 ## Deploy (Oracle Cloud / GCP VM)
 
 1. **Provision** an always-free VM (Oracle Ampere is generous) running Ubuntu.
-   Open ports 80 and 443 in both the cloud security list *and* the VM firewall.
-2. **Get a domain** — a free [DuckDNS](https://www.duckdns.org) subdomain works;
-   point it at the VM's public IP.
-3. **Build & install the app:**
+2. **Domain:** a free [DuckDNS](https://www.duckdns.org) subdomain pointed at the
+   VM's public IP (many subdomains can share one IP).
+3. **Install** Node 20, git, and the **latest yt-dlp**:
    ```bash
-   git clone <your-repo> ~/karaoke && cd ~/karaoke
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs git build-essential python3
+   sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp
+   ```
+4. **Clone, configure, build:**
+   ```bash
+   git clone https://github.com/Matthew-HMS/Karaoke-YT.git ~/karaoke && cd ~/karaoke
+   nano .env.local                 # YOUTUBE_API_KEY, AUTH_*, AUTH_URL=https://you.duckdns.org
    npm ci && npm run build
    ```
-4. **Run it as a service** (auto-restart, starts on boot):
+5. **Run as a service** (loads `.env.local` via `EnvironmentFile`):
    ```bash
-   sudo cp deploy/singalong.service /etc/systemd/system/
-   # edit the file: set User, WorkingDirectory, YOUTUBE_API_KEY
+   sudo cp deploy/singalong.service /etc/systemd/system/   # set User/paths inside
    sudo systemctl daemon-reload && sudo systemctl enable --now singalong
    ```
-5. **HTTPS via Caddy** (auto Let's Encrypt + WebSocket proxying):
-   ```bash
-   # install Caddy, then:
-   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # set your domain inside
-   sudo systemctl restart caddy
-   ```
+6. **HTTPS reverse proxy** — the app listens on `localhost:3000`; front it with
+   **Caddy** (`deploy/Caddyfile`, auto Let's Encrypt) *or*, if nginx already owns
+   80/443, add an nginx vhost with WebSocket upgrade headers + certbot. Open
+   ports 80/443 in both the Oracle Security List and the VM firewall.
+7. **Google:** add `https://you.duckdns.org/api/auth/callback/google` to the
+   OAuth client's redirect URIs.
 
-Visit `https://your-subdomain.duckdns.org` — create a room on the TV, scan the
-QR from any phone (even on cellular), and sing.
+### Continuous deploy
+`.github/workflows/deploy.yml` SSHes into the VM on every push to `main`
+(git pull → `npm ci` → build → restart). Set repo secrets `DEPLOY_HOST`,
+`DEPLOY_USER`, `DEPLOY_PORT`, `DEPLOY_SSH_KEY`, and a passwordless-sudo rule for
+`systemctl restart singalong`.
 
 ## Trade-off vs. pikaraoke
 

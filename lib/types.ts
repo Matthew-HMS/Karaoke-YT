@@ -46,13 +46,26 @@ export interface ClientToServerEvents {
   "player:command": (payload: { code: string } & PlayerCommand) => void;
   "player:report": (payload: { code: string; state: PlayerState }) => void;
   "player:ended": (payload: { code: string }) => void;
+  // A remote triggers a sound effect; the host (TV) plays it.
+  "sfx:play": (payload: { code: string; name: SfxName }) => void;
 }
 
 export interface ServerToClientEvents {
   "room:state": (state: RoomState) => void;
   "player:command": (cmd: PlayerCommand) => void;
   "player:state": (state: PlayerState) => void;
+  "sfx:play": (payload: { name: SfxName }) => void;
 }
+
+export const SFX_NAMES = [
+  "airhorn",
+  "applause",
+  "whistle",
+  "drumroll",
+  "tada",
+  "sadtrombone",
+] as const;
+export type SfxName = (typeof SFX_NAMES)[number];
 
 export const DEFAULT_PLAYER_STATE: PlayerState = {
   status: "idle",

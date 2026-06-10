@@ -12,7 +12,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatTime } from "@/lib/format";
 import { useRoom } from "@/lib/useRoom";
-import type { QueueItem } from "@/lib/types";
+import type { QueueItem, SfxName } from "@/lib/types";
 
 type SearchResult = {
   videoId: string;
@@ -30,9 +30,19 @@ const TAB_LABELS: Record<Tab, string> = {
   queue: "Queue",
 };
 
+// Reaction buttons → play a sound effect on the TV (host).
+const SFX_BUTTONS: { name: SfxName; emoji: string; label: string }[] = [
+  { name: "applause", emoji: "👏", label: "Applause" },
+  { name: "whistle", emoji: "😗", label: "Whistle" },
+  { name: "airhorn", emoji: "📯", label: "Airhorn" },
+  { name: "tada", emoji: "🎉", label: "Ta-da" },
+  { name: "drumroll", emoji: "🥁", label: "Drumroll" },
+  { name: "sadtrombone", emoji: "📉", label: "Sad trombone" },
+];
+
 export default function RemotePage() {
   const code = String(useParams().room || "").toUpperCase();
-  const { state, livePlayer, connected, addSong, removeSong, reorder, sendCommand } =
+  const { state, livePlayer, connected, addSong, removeSong, reorder, sendCommand, sendSfx } =
     useRoom(code, "remote");
   const { data: session } = useSession();
   const signedIn = !!session?.user?.id;
@@ -44,6 +54,11 @@ export default function RemotePage() {
   // Transient "Added ✓" confirmation (so we don't have to jump to the Queue).
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const flashToast = useCallback((msg: string) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2000);
+  }, []);
 
   // Singer name: a previously-typed name wins; otherwise default to the
   // signed-in Google name. Always editable and persisted.
@@ -69,11 +84,27 @@ export default function RemotePage() {
       });
       // Stay on the current tab so you can keep adding; just confirm.
       const short = r.title.length > 40 ? r.title.slice(0, 40) + "…" : r.title;
-      setToast(`✓ Added “${short}” to the queue`);
-      clearTimeout(toastTimer.current);
-      toastTimer.current = setTimeout(() => setToast(null), 1800);
+      flashToast(`✓ Added “${short}” to the queue`);
     },
-    [addSong, name]
+    [addSong, name, flashToast]
+  );
+
+  // Add many at once (a playlist) with a single confirmation toast.
+  const addMany = useCallback(
+    (songs: SearchResult[]) => {
+      const singer = name.trim() || "Guest";
+      songs.forEach((s) =>
+        addSong({
+          videoId: s.videoId,
+          title: s.title,
+          thumbnail: s.thumbnail,
+          durationSec: s.durationSec,
+          singer,
+        })
+      );
+      flashToast(`✓ Added ${songs.length} songs to the queue`);
+    },
+    [addSong, name, flashToast]
   );
 
   // Toggle a song in the signed-in user's favorites (prompts sign-in if guest):
@@ -192,9 +223,33 @@ export default function RemotePage() {
         ))}
       </nav>
 
+      {/* Reactions — play a sound effect on the TV. Always visible. */}
+      <div className="no-scrollbar flex items-center gap-1 overflow-x-auto border-b border-white/10 px-2 py-2">
+        <span className="shrink-0 px-1 text-[10px] font-semibold uppercase tracking-wide text-white/30">
+          React
+        </span>
+        {SFX_BUTTONS.map((b) => (
+          <button
+            key={b.name}
+            type="button"
+            onClick={() => sendSfx(b.name)}
+            className="shrink-0 rounded-full bg-white/5 px-3 py-1.5 text-xl transition active:scale-90 active:bg-white/20"
+            aria-label={b.label}
+            title={b.label}
+          >
+            {b.emoji}
+          </button>
+        ))}
+      </div>
+
       <div className="flex-1 px-4 py-4">
         {tab === "search" && (
-          <SearchTab onAdd={add} onStar={favorite} starred={starred} />
+          <SearchTab
+            onAdd={add}
+            onAddMany={addMany}
+            onStar={favorite}
+            starred={starred}
+          />
         )}
         {tab === "favorites" &&
           (signedIn ? (
@@ -309,10 +364,12 @@ function SongRow({
 
 function SearchTab({
   onAdd,
+  onAddMany,
   onStar,
   starred,
 }: {
   onAdd: (r: SearchResult) => void;
+  onAddMany: (rs: SearchResult[]) => void;
   onStar: (r: SearchResult) => void;
   starred: Set<string>;
 }) {
@@ -323,6 +380,29 @@ function SearchTab({
   const [error, setError] = useState<string | null>(null);
 
   const looksLikeUrl = /youtu\.be\/|youtube\.com\//.test(q);
+  // A real playlist link (has list=, not an auto-generated radio/mix).
+  const playlistMatch = q.match(/[?&]list=([\w-]+)/);
+  const isPlaylist = !!playlistMatch && !/^(RD|UL)/.test(playlistMatch[1]);
+
+  const addPlaylist = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: q }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Couldn’t read playlist");
+      onAddMany(data.results);
+      setQ("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn’t read playlist");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const runSearch = useCallback(
     async (query: string) => {
@@ -399,11 +479,15 @@ function SearchTab({
       {looksLikeUrl ? (
         <button
           type="button"
-          onClick={addPastedLink}
+          onClick={isPlaylist ? addPlaylist : addPastedLink}
           disabled={loading}
           className="mt-3 w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-pink-500 py-3 font-bold disabled:opacity-50"
         >
-          {loading ? "Adding…" : "➕ Add this link"}
+          {loading
+            ? "Adding…"
+            : isPlaylist
+            ? "➕ Add whole playlist"
+            : "➕ Add this link"}
         </button>
       ) : (
         <label className="mt-3 flex items-center gap-2 text-sm text-white/60">
@@ -465,6 +549,11 @@ function FavoritesTab({
   // Only show songs that are still starred, so un-starring removes them live.
   const visible = items.filter((i) => starred.has(i.videoId));
 
+  const addRandom = () => {
+    if (visible.length === 0) return;
+    onAdd(visible[Math.floor(Math.random() * visible.length)]);
+  };
+
   if (loading) return <p className="text-sm text-white/40">Loading…</p>;
   if (visible.length === 0)
     return (
@@ -474,17 +563,26 @@ function FavoritesTab({
     );
 
   return (
-    <ul className="space-y-2">
-      {visible.map((r) => (
-        <SongRow
-          key={r.videoId}
-          song={r}
-          onAdd={onAdd}
-          onStar={onStar}
-          starred={starred.has(r.videoId)}
-        />
-      ))}
-    </ul>
+    <div>
+      <button
+        type="button"
+        onClick={addRandom}
+        className="mb-3 w-full rounded-xl bg-gradient-to-r from-amber-400 to-fuchsia-500 py-3 font-bold text-black active:scale-[0.99]"
+      >
+        🎲 Surprise me — add a random favorite
+      </button>
+      <ul className="space-y-2">
+        {visible.map((r) => (
+          <SongRow
+            key={r.videoId}
+            song={r}
+            onAdd={onAdd}
+            onStar={onStar}
+            starred={starred.has(r.videoId)}
+          />
+        ))}
+      </ul>
+    </div>
   );
 }
 

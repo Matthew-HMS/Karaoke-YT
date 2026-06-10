@@ -11,7 +11,9 @@ import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlayerHandle, YouTubePlayer } from "@/components/YouTubePlayer";
 import { formatTime } from "@/lib/format";
+import { playSfx, unlockAudio } from "@/lib/sfx";
 import { getSocket } from "@/lib/socket";
+import type { SfxName } from "@/lib/types";
 import { useRoom } from "@/lib/useRoom";
 
 // Safari still exposes fullscreen only under webkit-prefixed names.
@@ -52,9 +54,23 @@ export default function HostPage() {
       // "skip" advances the queue server-side; the new videoId arrives via
       // room:state and the player loads it automatically.
     };
+    // Play sound effects triggered from remotes on the TV.
+    const onSfx = ({ name }: { name: SfxName }) => playSfx(name);
+
     socket.on("player:command", onCommand);
+    socket.on("sfx:play", onSfx);
+
+    // Unlock the audio context on the first interaction so SFX can play later
+    // without a gesture (browsers start it suspended).
+    const unlock = () => unlockAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+
     return () => {
       socket.off("player:command", onCommand);
+      socket.off("sfx:play", onSfx);
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
     };
   }, []);
 

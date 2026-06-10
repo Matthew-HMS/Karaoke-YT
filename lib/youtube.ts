@@ -38,6 +38,22 @@ export function extractVideoId(input: string): string | null {
   return null;
 }
 
+// Pull a playlist id (list=...) out of a YouTube URL, if present.
+export function extractPlaylistId(input: string): string | null {
+  try {
+    const url = new URL(input.trim());
+    const host = url.hostname.replace(/^www\./, "");
+    if (host.endsWith("youtube.com") || host === "youtu.be") {
+      const list = url.searchParams.get("list");
+      // Ignore auto-generated "radio"/mix lists which aren't real playlists.
+      if (list && !/^(RD|UL)/.test(list)) return list;
+    }
+  } catch {
+    // not a URL
+  }
+  return null;
+}
+
 // ISO 8601 duration (e.g. "PT3M20S") → seconds.
 export function parseDuration(iso: string): number {
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);

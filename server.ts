@@ -99,6 +99,12 @@ app.prepare().then(() => {
       socket.to(code).emit("player:state", state);
     });
 
+    // A remote triggered a sound effect → relay to the room so the host (TV)
+    // plays it. (Broadcast to everyone in the room; only the host page acts.)
+    socket.on("sfx:play", ({ code, name }) => {
+      io.to(code).emit("sfx:play", { name });
+    });
+
     // Host: current video ended → advance the queue and resync.
     socket.on("player:ended", ({ code }) => {
       const room = getRoom(code);
