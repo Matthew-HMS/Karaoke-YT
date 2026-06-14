@@ -8,6 +8,7 @@ export type QueueItem = {
   durationSec: number;
   singer: string; // name typed by the guest who added it
   addedBy: string; // guest/socket id, so a guest can remove their own song
+  userId?: string; // signed-in adder's user id, for per-user play counts
 };
 
 export type PlayerStatus = "playing" | "paused" | "idle";
@@ -37,8 +38,13 @@ export type PlayerCommand =
 
 export interface ClientToServerEvents {
   "room:join": (
-    payload: { code: string; role: "host" | "remote"; name?: string },
-    ack?: (state: RoomState | { error: string }) => void
+    payload: {
+      code: string;
+      role: "host" | "remote";
+      name?: string;
+      password?: string; // host sets it; guest supplies it to be let in
+    },
+    ack?: (state: RoomState | { error: "not_found" | "bad_password" }) => void
   ) => void;
   "queue:add": (payload: { code: string; item: Omit<QueueItem, "id" | "addedBy"> }) => void;
   "queue:remove": (payload: { code: string; id: string }) => void;

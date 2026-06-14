@@ -1,15 +1,17 @@
-// Quota-free YouTube search via yt-dlp (the same tool pikaraoke uses). Spawns
-// `yt-dlp "ytsearchN:<query>"` and parses the flat-playlist JSON. No API key,
-// no daily quota. Requires the yt-dlp binary on PATH (or set YTDLP_PATH).
+// Quota-free YouTube search via yt-dlp (the same tool pikaraoke uses). Scrapes
+// a YouTube results URL with `--flat-playlist -J`. No API key, no daily quota.
+// Requires the yt-dlp binary on PATH (or set YTDLP_PATH).
 
 import { spawn } from "child_process";
 import type { SearchResult } from "./youtube";
 
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
-const MAX_RESULTS = 20;
 const MAX_PLAYLIST = 50; // don't let one playlist flood the queue
-const TIMEOUT_MS = 12000;
 const PLAYLIST_TIMEOUT_MS = 25000;
+
+// YouTube "sp" filter code for "relevance + type=video" (so flat entries are
+// videos, not channels/playlists).
+const SP_VIDEO = "CAASAhAB";
 
 type FlatEntry = {
   id?: string;
@@ -17,13 +19,23 @@ type FlatEntry = {
   duration?: number;
 };
 
-// Run yt-dlp with `--flat-playlist -J` for a target (search term or URL) and
-// parse the flat entries into SearchResults.
-function runFlat(target: string, timeout: number): Promise<SearchResult[]> {
+// Run yt-dlp with `--flat-playlist -J` against a URL and parse the flat entries.
+function runFlat(
+  target: string,
+  limit: number,
+  timeout: number
+): Promise<SearchResult[]> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       YTDLP,
-      [target, "--flat-playlist", "-J", "--no-warnings"],
+      [
+        target,
+        "--flat-playlist",
+        "-J",
+        "--no-warnings",
+        "--playlist-end",
+        String(limit),
+      ],
       { timeout }
     );
 
@@ -60,10 +72,14 @@ function runFlat(target: string, timeout: number): Promise<SearchResult[]> {
 
 export function searchViaYtDlp(
   query: string,
-  karaokeOnly: boolean
+  opts: { karaokeOnly: boolean; limit: number }
 ): Promise<SearchResult[]> {
-  const q = karaokeOnly ? `${query} karaoke` : query;
-  return runFlat(`ytsearch${MAX_RESULTS}:${q}`, TIMEOUT_MS);
+  const q = opts.karaokeOnly ? `${query} karaoke` : query;
+  const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(
+    q
+  )}&sp=${SP_VIDEO}`;
+  // A little headroom on the timeout for larger result sets.
+  return runFlat(url, opts.limit, 10000 + opts.limit * 120);
 }
 
 // Fetch a playlist's videos (capped) via yt-dlp.
@@ -71,6 +87,5 @@ export async function getPlaylistViaYtDlp(
   playlistId: string
 ): Promise<SearchResult[]> {
   const url = `https://www.youtube.com/playlist?list=${playlistId}`;
-  const results = await runFlat(url, PLAYLIST_TIMEOUT_MS);
-  return results.slice(0, MAX_PLAYLIST);
+  return runFlat(url, MAX_PLAYLIST, PLAYLIST_TIMEOUT_MS);
 }

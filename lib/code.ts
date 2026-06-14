@@ -23,3 +23,15 @@ export function normalizeCode(raw: string): string {
 export function isValidCode(code: string): boolean {
   return /^[A-HJ-NP-Z2-9]{4}$/.test(code);
 }
+
+// Passwords are user-typed, so allow the FULL alphabet incl. 0/1/I/O.
+export function normalizePassword(raw: string): string {
+  return raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 4);
+}
+
+export function isValidPassword(pw: string): boolean {
+  return /^[A-Z0-9]{4}$/.test(pw);
+}

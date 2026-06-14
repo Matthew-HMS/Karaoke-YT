@@ -14,12 +14,27 @@ import {
   SfxName,
 } from "./types";
 
-export function useRoom(code: string, role: "host" | "remote", name?: string) {
+type UseRoomOpts = {
+  password?: string; // host sets it; remote supplies it to be let in
+  userId?: string; // signed-in user, for per-user play counts
+};
+
+export function useRoom(
+  code: string,
+  role: "host" | "remote",
+  opts: UseRoomOpts = {}
+) {
+  const { password = "", userId } = opts;
   const [state, setState] = useState<RoomState | null>(null);
   // The host owns the authoritative player position; remotes receive it via
   // the `player:state` event so the scrub bar can track playback live.
   const [livePlayer, setLivePlayer] = useState<PlayerState | null>(null);
   const [connected, setConnected] = useState(false);
+  // null = not yet resolved; true = joined; "not_found"/"bad_password" = rejected.
+  const [joinError, setJoinError] = useState<
+    null | "not_found" | "bad_password"
+  >(null);
+  const [joined, setJoined] = useState(false);
   const socketRef = useRef(getSocket());
 
   useEffect(() => {
@@ -27,7 +42,15 @@ export function useRoom(code: string, role: "host" | "remote", name?: string) {
 
     const join = () => {
       setConnected(true);
-      socket.emit("room:join", { code, role, name });
+      socket.emit("room:join", { code, role, password }, (res) => {
+        if (res && "error" in res) {
+          setJoinError(res.error);
+          setJoined(false);
+        } else {
+          setJoinError(null);
+          setJoined(true);
+        }
+      });
     };
 
     socket.on("connect", join);
@@ -46,7 +69,7 @@ export function useRoom(code: string, role: "host" | "remote", name?: string) {
       socket.off("room:state");
       socket.off("player:state");
     };
-  }, [code, role, name]);
+  }, [code, role, password]);
 
   const socket = socketRef.current;
 
@@ -54,8 +77,13 @@ export function useRoom(code: string, role: "host" | "remote", name?: string) {
     state,
     livePlayer,
     connected,
+    joined,
+    joinError,
     addSong: (item: Omit<QueueItem, "id" | "addedBy">) =>
-      socket.emit("queue:add", { code, item }),
+      socket.emit("queue:add", {
+        code,
+        item: userId ? { ...item, userId } : item,
+      }),
     removeSong: (id: string) => socket.emit("queue:remove", { code, id }),
     reorder: (order: string[]) => socket.emit("queue:reorder", { code, order }),
     sendCommand: (cmd: PlayerCommand) =>

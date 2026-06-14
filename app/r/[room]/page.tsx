@@ -10,6 +10,7 @@ import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isValidPassword, normalizePassword } from "@/lib/code";
 import { formatTime } from "@/lib/format";
 import { useRoom } from "@/lib/useRoom";
 import type { QueueItem, SfxName } from "@/lib/types";
@@ -42,12 +43,36 @@ const SFX_BUTTONS: { name: SfxName; emoji: string; label: string }[] = [
 
 export default function RemotePage() {
   const code = String(useParams().room || "").toUpperCase();
-  const { state, livePlayer, connected, addSong, removeSong, reorder, sendCommand, sendSfx } =
-    useRoom(code, "remote");
   const { data: session } = useSession();
   const signedIn = !!session?.user?.id;
 
+  // Join password (entered once, remembered for this tab so a reload re-joins).
+  const [pw, setPw] = useState("");
+  const [attempted, setAttempted] = useState(false);
+  useEffect(() => {
+    setPw(sessionStorage.getItem(`guest-pw-${code}`) || "");
+  }, [code]);
+
+  const {
+    state,
+    livePlayer,
+    connected,
+    joined,
+    joinError,
+    addSong,
+    removeSong,
+    reorder,
+    sendCommand,
+    sendSfx,
+  } = useRoom(code, "remote", { password: pw, userId: session?.user?.id });
+
+  // Remember a password that worked.
+  useEffect(() => {
+    if (joined && pw) sessionStorage.setItem(`guest-pw-${code}`, pw);
+  }, [joined, pw, code]);
+
   const [tab, setTab] = useState<Tab>("search");
+  const [showReactions, setShowReactions] = useState(false);
   const [name, setName] = useState("");
   // Local "just starred" set for instant ★ feedback across tabs.
   const [starred, setStarred] = useState<Set<string>>(new Set());
@@ -161,6 +186,21 @@ export default function RemotePage() {
     };
   }, [signedIn]);
 
+  // Gate the remote behind room-exists + password checks.
+  if (joinError === "not_found") return <RoomMissing code={code} />;
+  if (!joined) {
+    return (
+      <PasswordGate
+        code={code}
+        showError={attempted && joinError === "bad_password"}
+        onSubmit={(p) => {
+          setAttempted(true);
+          setPw(p);
+        }}
+      />
+    );
+  }
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col">
       {/* Header */}
@@ -223,25 +263,6 @@ export default function RemotePage() {
         ))}
       </nav>
 
-      {/* Reactions — play a sound effect on the TV. Always visible. */}
-      <div className="no-scrollbar flex items-center gap-1 overflow-x-auto border-b border-white/10 px-2 py-2">
-        <span className="shrink-0 px-1 text-[10px] font-semibold uppercase tracking-wide text-white/30">
-          React
-        </span>
-        {SFX_BUTTONS.map((b) => (
-          <button
-            key={b.name}
-            type="button"
-            onClick={() => sendSfx(b.name)}
-            className="shrink-0 rounded-full bg-white/5 px-3 py-1.5 text-xl transition active:scale-90 active:bg-white/20"
-            aria-label={b.label}
-            title={b.label}
-          >
-            {b.emoji}
-          </button>
-        ))}
-      </div>
-
       <div className="flex-1 px-4 py-4">
         {tab === "search" && (
           <SearchTab
@@ -294,6 +315,106 @@ export default function RemotePage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Reactions — a button that reveals the sound-effect options (play on TV). */}
+      <div className="fixed bottom-5 right-5 z-30 flex flex-col items-end gap-2">
+        <AnimatePresence>
+          {showReactions && (
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.9 }}
+              className="flex flex-col gap-1 rounded-2xl border border-white/10 bg-[#1a1a22] p-2 shadow-xl"
+            >
+              {SFX_BUTTONS.map((b) => (
+                <button
+                  key={b.name}
+                  type="button"
+                  onClick={() => sendSfx(b.name)}
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 text-left transition active:scale-95 active:bg-white/10"
+                >
+                  <span className="text-2xl">{b.emoji}</span>
+                  <span className="text-sm font-medium">{b.label}</span>
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <button
+          type="button"
+          onClick={() => setShowReactions((v) => !v)}
+          aria-label="Reactions"
+          className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-[#1a1a22] text-2xl shadow-lg shadow-black/40 transition active:scale-95"
+        >
+          {showReactions ? "✕" : "🎉"}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+// Shown when the entered code has no active host room.
+function RoomMissing({ code }: { code: string }) {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center px-6 text-center">
+      <div className="text-5xl">🤷</div>
+      <h1 className="mt-4 text-2xl font-bold">Room not found</h1>
+      <p className="mt-2 text-white/50">
+        No active room with code <span className="font-mono font-bold">{code}</span>.
+        Check the code, or ask the host to start the room.
+      </p>
+      <a
+        href="/"
+        className="mt-6 rounded-xl bg-white/10 px-5 py-2.5 font-semibold active:scale-95"
+      >
+        ← Back
+      </a>
+    </main>
+  );
+}
+
+// Password prompt before a guest can enter a room.
+function PasswordGate({
+  code,
+  showError,
+  onSubmit,
+}: {
+  code: string;
+  showError: boolean;
+  onSubmit: (pw: string) => void;
+}) {
+  const [pw, setPw] = useState("");
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center px-6">
+      <div className="w-full max-w-xs text-center">
+        <div className="text-5xl">🔒</div>
+        <h1 className="mt-4 text-2xl font-bold">Join room {code}</h1>
+        <p className="mt-2 text-sm text-white/50">
+          Enter the 4-letter password shown on the TV.
+        </p>
+        <input
+          value={pw}
+          onChange={(e) => setPw(normalizePassword(e.target.value))}
+          onKeyDown={(e) =>
+            e.key === "Enter" && isValidPassword(pw) && onSubmit(pw)
+          }
+          autoFocus
+          autoCapitalize="characters"
+          placeholder="····"
+          className="mt-5 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center text-3xl font-black tracking-[0.4em] uppercase outline-none focus:border-fuchsia-400"
+        />
+        {showError && (
+          <p className="mt-2 text-sm text-amber-400">Incorrect password.</p>
+        )}
+        <button
+          type="button"
+          onClick={() => isValidPassword(pw) && onSubmit(pw)}
+          disabled={!isValidPassword(pw)}
+          className="mt-4 w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-pink-500 py-3 font-bold disabled:opacity-40 active:scale-[0.99]"
+        >
+          Join
+        </button>
+      </div>
     </main>
   );
 }
@@ -374,15 +495,79 @@ function SearchTab({
   starred: Set<string>;
 }) {
   const [q, setQ] = useState("");
-  const [karaokeOnly, setKaraokeOnly] = useState(true);
+  const [karaokeOnly, setKaraokeOnly] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [limit, setLimit] = useState(20);
+  const [lastQuery, setLastQuery] = useState("");
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const looksLikeUrl = /youtu\.be\/|youtube\.com\//.test(q);
   // A real playlist link (has list=, not an auto-generated radio/mix).
   const playlistMatch = q.match(/[?&]list=([\w-]+)/);
   const isPlaylist = !!playlistMatch && !/^(RD|UL)/.test(playlistMatch[1]);
+
+  const runSearch = useCallback(
+    async (query: string, lim: number, kOnly: boolean, append = false) => {
+      if (!query.trim()) {
+        setResults([]);
+        return;
+      }
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/search?q=${encodeURIComponent(query)}&karaokeOnly=${
+            kOnly ? "1" : "0"
+          }&limit=${lim}`
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 429 || `${data.error}`.includes("429")) {
+            throw new Error(
+              "YouTube search limit hit — wait a minute and try again. (Pasting a link still works.)"
+            );
+          }
+          throw new Error(data.error || "Search failed");
+        }
+        if (append) {
+          // Append only NEW videos, keeping existing rows in place so the list
+          // doesn't jump/reorder on "Load more".
+          setResults((prev) => {
+            const have = new Set(prev.map((r) => r.videoId));
+            return [
+              ...prev,
+              ...(data.results as SearchResult[]).filter(
+                (r) => !have.has(r.videoId)
+              ),
+            ];
+          });
+        } else {
+          setResults(data.results);
+        }
+        setLastQuery(query);
+        setLimit(lim);
+        setHasMore((data.results?.length ?? 0) >= lim);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Search failed");
+        if (!append) setResults([]);
+      } finally {
+        if (append) setLoadingMore(false);
+        else setLoading(false);
+      }
+    },
+    []
+  );
+
+  const submit = () => runSearch(q, 20, karaokeOnly);
+  const toggleKaraoke = (k: boolean) => {
+    setKaraokeOnly(k);
+    if (lastQuery) runSearch(lastQuery, 20, k);
+  };
+  const loadMore = () => runSearch(lastQuery, limit + 20, karaokeOnly, true);
 
   const addPlaylist = async () => {
     setLoading(true);
@@ -404,33 +589,6 @@ function SearchTab({
     }
   };
 
-  const runSearch = useCallback(
-    async (query: string) => {
-      if (!query.trim()) {
-        setResults([]);
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(
-          `/api/search?q=${encodeURIComponent(query)}&karaokeOnly=${
-            karaokeOnly ? "1" : "0"
-          }`
-        );
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Search failed");
-        setResults(data.results);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Search failed");
-        setResults([]);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [karaokeOnly]
-  );
-
   const addPastedLink = async () => {
     setLoading(true);
     setError(null);
@@ -451,6 +609,11 @@ function SearchTab({
     }
   };
 
+  // Pin the user's favorites to the top of results (stable sort).
+  const displayed = [...results].sort(
+    (a, b) => Number(starred.has(b.videoId)) - Number(starred.has(a.videoId))
+  );
+
   return (
     <div>
       <div className="flex gap-2">
@@ -458,7 +621,7 @@ function SearchTab({
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !looksLikeUrl) runSearch(q);
+            if (e.key === "Enter" && !looksLikeUrl) submit();
           }}
           enterKeyHint="search"
           placeholder="Search songs, or paste a YouTube link"
@@ -467,7 +630,7 @@ function SearchTab({
         {!looksLikeUrl && (
           <button
             type="button"
-            onClick={() => runSearch(q)}
+            onClick={submit}
             disabled={loading || !q.trim()}
             className="shrink-0 rounded-xl bg-fuchsia-500 px-4 font-bold disabled:opacity-40 active:scale-95"
           >
@@ -494,7 +657,7 @@ function SearchTab({
           <input
             type="checkbox"
             checked={karaokeOnly}
-            onChange={(e) => setKaraokeOnly(e.target.checked)}
+            onChange={(e) => toggleKaraoke(e.target.checked)}
             className="h-4 w-4 accent-fuchsia-500"
           />
           Karaoke versions only
@@ -507,7 +670,7 @@ function SearchTab({
       )}
 
       <ul className="mt-4 space-y-2">
-        {results.map((r) => (
+        {displayed.map((r) => (
           <SongRow
             key={r.videoId}
             song={r}
@@ -517,6 +680,17 @@ function SearchTab({
           />
         ))}
       </ul>
+
+      {hasMore && !looksLikeUrl && displayed.length > 0 && (
+        <button
+          type="button"
+          onClick={loadMore}
+          disabled={loadingMore}
+          className="mt-3 w-full rounded-xl bg-white/10 py-3 font-semibold active:scale-95 disabled:opacity-50"
+        >
+          {loadingMore ? "Loading…" : "Load more"}
+        </button>
+      )}
     </div>
   );
 }
@@ -534,17 +708,19 @@ function FavoritesTab({
 }) {
   const [items, setItems] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sort, setSort] = useState<"added" | "plays">("added");
 
   useEffect(() => {
     let active = true;
-    fetch("/api/favorites")
+    setLoading(true);
+    fetch(`/api/favorites?sort=${sort}`)
       .then((r) => r.json())
       .then((d) => active && setItems(d.results ?? []))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, []);
+  }, [sort]);
 
   // Only show songs that are still starred, so un-starring removes them live.
   const visible = items.filter((i) => starred.has(i.videoId));
@@ -554,24 +730,46 @@ function FavoritesTab({
     onAdd(visible[Math.floor(Math.random() * visible.length)]);
   };
 
-  if (loading) return <p className="text-sm text-white/40">Loading…</p>;
-  if (visible.length === 0)
-    return (
-      <p className="text-sm text-white/30">
-        No favorites yet. Tap ☆ on any song to save it.
-      </p>
-    );
+  const FAV_SORTS: { key: "added" | "plays"; label: string }[] = [
+    { key: "added", label: "Newest added" },
+    { key: "plays", label: "Most played" },
+  ];
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={addRandom}
-        className="mb-3 w-full rounded-xl bg-gradient-to-r from-amber-400 to-fuchsia-500 py-3 font-bold text-black active:scale-[0.99]"
-      >
-        🎲 Surprise me — add a random favorite
-      </button>
-      <ul className="space-y-2">
+      <div className="mb-3 flex gap-1">
+        {FAV_SORTS.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => setSort(s.key)}
+            className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+              sort === s.key
+                ? "bg-fuchsia-500 text-white"
+                : "bg-white/5 text-white/50"
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-white/40">Loading…</p>
+      ) : visible.length === 0 ? (
+        <p className="text-sm text-white/30">
+          No favorites yet. Tap ☆ on any song to save it.
+        </p>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={addRandom}
+            className="mb-3 w-full rounded-xl bg-gradient-to-r from-amber-400 to-fuchsia-500 py-3 font-bold text-black active:scale-[0.99]"
+          >
+            🎲 Surprise me — add a random favorite
+          </button>
+          <ul className="space-y-2">
         {visible.map((r) => (
           <SongRow
             key={r.videoId}
@@ -581,7 +779,9 @@ function FavoritesTab({
             starred={starred.has(r.videoId)}
           />
         ))}
-      </ul>
+          </ul>
+        </>
+      )}
     </div>
   );
 }

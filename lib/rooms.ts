@@ -13,6 +13,7 @@ import {
 
 type Room = {
   code: string;
+  password: string; // 4-char join password set by the host
   queue: QueueItem[];
   nowPlaying: QueueItem | null;
   playerState: PlayerState;
@@ -37,9 +38,10 @@ export function generateRoomCode(): string {
   return code;
 }
 
-export function createRoom(code?: string): Room {
+export function createRoom(code?: string, password = ""): Room {
   const room: Room = {
     code: code ?? generateRoomCode(),
+    password,
     queue: [],
     nowPlaying: null,
     playerState: { ...DEFAULT_PLAYER_STATE },
@@ -50,12 +52,12 @@ export function createRoom(code?: string): Room {
   return room;
 }
 
-// Get an existing room, or lazily create one for the given code. Lazy creation
-// keeps things simple: visiting /host/ABCD or /r/ABCD just works.
-export function getOrCreateRoom(code: string): Room {
+// Get an existing room, or lazily create one for the given code. Only the host
+// creates rooms (see server.ts); guests must join an existing one.
+export function getOrCreateRoom(code: string, password = ""): Room {
   const existing = rooms.get(code);
   if (existing) return existing;
-  return createRoom(code);
+  return createRoom(code, password);
 }
 
 export function getRoom(code: string): Room | undefined {

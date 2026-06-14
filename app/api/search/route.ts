@@ -6,17 +6,18 @@ import { searchSongs } from "@/lib/search";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/search?q=...&karaokeOnly=1
-// Tries the quota-free yt-dlp backend first, falls back to the YouTube Data API.
-// karaokeOnly defaults ON: biases results toward singable karaoke tracks.
+// GET /api/search?q=...&karaokeOnly=1&limit=20
+// Quota-free yt-dlp, falling back to the YouTube Data API.
 export async function GET(req: NextRequest) {
-  const q = req.nextUrl.searchParams.get("q")?.trim();
+  const p = req.nextUrl.searchParams;
+  const q = p.get("q")?.trim();
   if (!q) return NextResponse.json({ results: [] });
 
-  const karaokeOnly = req.nextUrl.searchParams.get("karaokeOnly") !== "0";
+  const karaokeOnly = p.get("karaokeOnly") === "1"; // off by default
+  const limit = Math.min(Math.max(Number(p.get("limit")) || 20, 10), 100);
 
   try {
-    const { results, source } = await searchSongs(q, karaokeOnly);
+    const { results, source } = await searchSongs(q, { karaokeOnly, limit });
     return NextResponse.json({ results, source });
   } catch (err) {
     // Both backends failed (e.g. yt-dlp missing AND no API key / quota gone).

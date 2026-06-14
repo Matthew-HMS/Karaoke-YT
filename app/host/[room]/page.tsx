@@ -27,8 +27,27 @@ type FsElement = HTMLElement & {
 
 export default function HostPage() {
   const code = String(useParams().room || "").toUpperCase();
-  const { state, livePlayer, sendCommand, reportState, notifyEnded } =
-    useRoom(code, "host");
+  // The password was chosen on the landing page (sessionStorage). If someone
+  // opens /host/CODE directly, generate one so the room is still protected.
+  const [password, setPassword] = useState("");
+  useEffect(() => {
+    const key = `host-pw-${code}`;
+    let pw = sessionStorage.getItem(key);
+    if (!pw) {
+      pw = Array.from(
+        { length: 4 },
+        () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]
+      ).join("");
+      sessionStorage.setItem(key, pw);
+    }
+    setPassword(pw);
+  }, [code]);
+
+  const { state, livePlayer, sendCommand, reportState, notifyEnded } = useRoom(
+    code,
+    "host",
+    { password }
+  );
   const playerRef = useRef<PlayerHandle>(null);
   const [joinUrl, setJoinUrl] = useState("");
   const [blockedId, setBlockedId] = useState<string | null>(null);
@@ -173,6 +192,14 @@ export default function HostPage() {
             </div>
             <div className="mt-3 text-4xl font-black tracking-[0.3em] text-white">
               {code}
+            </div>
+            <div className="mt-3 border-t border-white/10 pt-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-white/40">
+                Password
+              </div>
+              <div className="bg-gradient-to-r from-fuchsia-500 to-pink-500 bg-clip-text text-2xl font-black tracking-[0.3em] text-transparent">
+                {password || "····"}
+              </div>
             </div>
           </div>
 

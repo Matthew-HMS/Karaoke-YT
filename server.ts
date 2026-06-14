@@ -22,6 +22,8 @@ import {
   setPlayerState,
   toRoomState,
 } from "./lib/rooms";
+import { recordPlay } from "./lib/db";
+import type { QueueItem } from "./lib/types";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST || "0.0.0.0";
@@ -44,15 +46,41 @@ app.prepare().then(() => {
     if (room) io.to(code).emit("room:state", toRoomState(room));
   };
 
+  // When a different song becomes now-playing, count a play for the signed-in
+  // user who queued it (powers the Favorites "play times" sort).
+  const recordIfNewSong = (
+    prevId: string | undefined,
+    current: QueueItem | null
+  ) => {
+    if (current && current.id !== prevId && current.userId) {
+      recordPlay(current.userId, current.videoId);
+    }
+  };
+
 
   io.on("connection", (socket) => {
     let joinedCode: string | null = null;
 
-    socket.on("room:join", ({ code, role }, ack) => {
-      const room = getOrCreateRoom(code);
+    socket.on("room:join", ({ code, role, password }, ack) => {
+      let room = getRoom(code);
+      if (role === "host") {
+        // The host owns the room: create it if needed and set its password.
+        room = getOrCreateRoom(code);
+        if (password) room.password = password;
+        room.hostSocketId = socket.id;
+      } else {
+        // A guest must join an EXISTING room with the correct password.
+        if (!room) {
+          ack?.({ error: "not_found" });
+          return;
+        }
+        if (room.password && password !== room.password) {
+          ack?.({ error: "bad_password" });
+          return;
+        }
+      }
       joinedCode = code;
       socket.join(code);
-      if (role === "host") room.hostSocketId = socket.id;
       const state = toRoomState(room);
       ack?.(state);
       socket.emit("room:state", state);
@@ -61,7 +89,9 @@ app.prepare().then(() => {
     socket.on("queue:add", ({ code, item }) => {
       const room = getRoom(code);
       if (!room) return;
+      const prevId = room.nowPlaying?.id;
       addToQueue(room, item, socket.id);
+      recordIfNewSong(prevId, room.nowPlaying);
       broadcastState(code);
     });
 
@@ -84,7 +114,11 @@ app.prepare().then(() => {
       const room = getRoom(code);
       if (!room) return;
       if (cmd.cmd === "skip" || cmd.cmd === "restart") {
-        if (cmd.cmd === "skip") advanceQueue(room);
+        if (cmd.cmd === "skip") {
+          const prevId = room.nowPlaying?.id;
+          advanceQueue(room);
+          recordIfNewSong(prevId, room.nowPlaying);
+        }
         broadcastState(code);
       }
       // Always relay to the host so it can act on the iframe.
@@ -109,7 +143,9 @@ app.prepare().then(() => {
     socket.on("player:ended", ({ code }) => {
       const room = getRoom(code);
       if (!room) return;
+      const prevId = room.nowPlaying?.id;
       advanceQueue(room);
+      recordIfNewSong(prevId, room.nowPlaying);
       broadcastState(code);
     });
 

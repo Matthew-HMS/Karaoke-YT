@@ -4,13 +4,14 @@ import { addFavorite, listFavorites, removeFavorite } from "@/lib/db";
 
 // All favorites are scoped to the signed-in user. No session → 401.
 
-// GET /api/favorites → the current user's starred songs.
-export async function GET() {
+// GET /api/favorites?sort=added|plays → the current user's starred songs.
+export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "sign in required" }, { status: 401 });
   }
-  return NextResponse.json({ results: listFavorites(session.user.id) });
+  const sort = req.nextUrl.searchParams.get("sort") === "plays" ? "plays" : "added";
+  return NextResponse.json({ results: listFavorites(session.user.id, sort) });
 }
 
 // POST /api/favorites → star a song. Body: { videoId, title, thumbnail, durationSec }

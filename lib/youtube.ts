@@ -98,13 +98,14 @@ export async function getVideoMeta(videoId: string): Promise<SearchResult | null
 
 export async function searchYouTube(
   query: string,
-  karaokeOnly: boolean
+  opts: { karaokeOnly: boolean; limit?: number }
 ): Promise<SearchResult[]> {
+  const { karaokeOnly, limit = 20 } = opts;
   const q = karaokeOnly ? `${query} karaoke instrumental lyrics` : query;
   const url = new URL(`${API_BASE}/search`);
   url.searchParams.set("part", "snippet");
   url.searchParams.set("type", "video");
-  url.searchParams.set("maxResults", "20");
+  url.searchParams.set("maxResults", String(Math.min(Math.max(limit, 1), 50)));
   url.searchParams.set("q", q);
   if (karaokeOnly) url.searchParams.set("videoCategoryId", "10"); // Music
   url.searchParams.set("videoEmbeddable", "true"); // skip non-embeddable

@@ -8,18 +8,24 @@ instantly **seek to any part** of a song.
 ## Features
 
 - 📺 **Host screen** — plays the video, shows now-playing + up-next, a QR code
-  to join, and a **fullscreen** toggle for the TV.
+  to join, the **room password**, and a **fullscreen** toggle for the TV.
+- 🔐 **Password-protected rooms** — the host sets a 4-letter password at
+  creation; guests need the code *and* the password (and get a clear "room not
+  found" if the code has no active host).
 - 📱 **Phone remote** — search, queue songs with your name, control playback,
   and **scrub/seek live**.
-- 🔎 **Quota-free search** via **yt-dlp**, with automatic fallback to the YouTube
-  Data API. Paste a single video link **or a whole playlist**.
+- 🔎 **Quota-free search** via **yt-dlp** (fallback to the YouTube Data API),
+  with **sort filters** (Top / Most viewed / Newest), **Load more** paging, and
+  your favorites pinned to the top. Paste a single link **or a whole playlist**.
 - 🔄 **Real-time sync** over Socket.IO (queue, play/pause/skip/seek).
 - ↕️ **Drag-to-reorder** the queue (drag the ⠿ grip).
-- 👤 **Sign in with Google** (Auth.js) to get **personal favorites**; "Recent"
-  is each room's own play history. Guests can use everything without an account.
+- 👤 **Sign in with Google** (Auth.js) for **personal favorites**, sortable by
+  newest-added or your own play count; "Recent" is each room's own play history.
+  Guests can use everything without an account.
 - 🎲 **Random favorite** — one tap to queue a random song you've starred.
-- 🎉 **Reactions** — phones trigger sound effects (applause, airhorn, ta-da,
-  drumroll, sad-trombone) that play on the TV, synthesized in-browser.
+- 🎉 **Reactions** — a button reveals sound effects (applause, whistle, airhorn,
+  ta-da, drumroll, sad-trombone) that play one-at-a-time on the TV (real `.mp3`
+  clips in `public/sfx/`, with an in-browser synth fallback).
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
 
 ## Architecture

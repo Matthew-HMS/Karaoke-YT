@@ -251,15 +251,41 @@ function playSynth(name: SfxName): void {
   }
 }
 
+// Only one sound effect at a time: let the current one FINISH, and ignore any
+// new triggers until it does (rather than cutting it off).
+let busy = false;
+let busyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function freeWhenDone(el: HTMLAudioElement) {
+  busy = true;
+  const release = () => {
+    busy = false;
+    if (busyTimer) clearTimeout(busyTimer);
+    busyTimer = null;
+  };
+  el.addEventListener("ended", release, { once: true });
+  el.addEventListener("error", release, { once: true });
+  // Safety net in case "ended" never fires — don't get stuck busy forever.
+  busyTimer = setTimeout(release, 12000);
+}
+
 export function playSfx(name: SfxName): void {
+  if (busy) return; // a sound is already playing — let it finish
+
   // Prefer a real recorded clip at /public/sfx/<name>.mp3 — much better quality.
   // If it's missing or can't play, fall back to the synthesized version, so the
   // app still works with zero audio files.
   try {
     const el = new Audio(`/sfx/${name}.mp3`);
     el.volume = 1;
-    el.play().catch(() => playSynth(name));
+    freeWhenDone(el);
+    el.play().catch(() => {
+      busy = false;
+      if (busyTimer) clearTimeout(busyTimer);
+      playSynth(name);
+    });
   } catch {
+    busy = false;
     playSynth(name);
   }
 }

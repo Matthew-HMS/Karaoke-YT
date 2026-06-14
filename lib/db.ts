@@ -54,13 +54,50 @@ if (!cols.some((c) => c.name === "userId")) {
   `);
 }
 
-const listFavStmt = db.prepare(
+// Per-user play counts: how many times THIS user's queued songs have played.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS play (
+    userId       TEXT NOT NULL,
+    videoId      TEXT NOT NULL,
+    count        INTEGER NOT NULL DEFAULT 0,
+    lastPlayedAt INTEGER NOT NULL,
+    PRIMARY KEY (userId, videoId)
+  );
+`);
+
+const recordPlayStmt = db.prepare(
+  `INSERT INTO play (userId, videoId, count, lastPlayedAt)
+   VALUES (@userId, @videoId, 1, @at)
+   ON CONFLICT(userId, videoId)
+   DO UPDATE SET count = count + 1, lastPlayedAt = @at`
+);
+
+export function recordPlay(userId: string, videoId: string): void {
+  recordPlayStmt.run({ userId, videoId, at: Date.now() });
+}
+
+export type FavoriteSort = "added" | "plays";
+
+// Favorites, optionally sorted by the user's own play count. A LEFT JOIN keeps
+// favorites with zero plays.
+const listFavAdded = db.prepare(
   `SELECT videoId, title, thumbnail, durationSec FROM favorite
    WHERE userId = ? ORDER BY starredAt DESC`
 );
+const listFavPlays = db.prepare(
+  `SELECT f.videoId, f.title, f.thumbnail, f.durationSec
+   FROM favorite f
+   LEFT JOIN play p ON p.userId = f.userId AND p.videoId = f.videoId
+   WHERE f.userId = ?
+   ORDER BY COALESCE(p.count, 0) DESC, f.starredAt DESC`
+);
 
-export function listFavorites(userId: string): SongMeta[] {
-  return listFavStmt.all(userId) as SongMeta[];
+export function listFavorites(
+  userId: string,
+  sort: FavoriteSort = "added"
+): SongMeta[] {
+  const stmt = sort === "plays" ? listFavPlays : listFavAdded;
+  return stmt.all(userId) as SongMeta[];
 }
 
 const addFavStmt = db.prepare(
