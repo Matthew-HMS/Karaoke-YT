@@ -173,7 +173,9 @@ export default function HostPage() {
           )}
         </div>
 
-        {/* Sidebar: join code + up next */}
+        {/* Sidebar: join code + up next. Hidden in fullscreen so the video
+            fills the whole width (code/password/next-song move to the footer). */}
+        {!isFullscreen && (
         <aside className="flex w-[340px] flex-col gap-6 border-l border-white/10 bg-[#0a0a0f] p-6">
           <div className="rounded-2xl bg-white/5 p-5 text-center">
             <div className="text-sm font-medium uppercase tracking-wide text-white/40">
@@ -243,6 +245,7 @@ export default function HostPage() {
             </ul>
           </div>
         </aside>
+        )}
       </div>
 
       {/* Now playing bar */}
@@ -257,7 +260,44 @@ export default function HostPage() {
             </div>
           )}
         </div>
-        <div className="flex w-1/2 items-center gap-3">
+        {/* In fullscreen the sidebar is gone, so surface the join code,
+            password, and the single next song here instead. */}
+        {isFullscreen && (
+          <div className="flex shrink-0 items-center gap-4">
+            <div className="text-center">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-white/40">
+                Code
+              </div>
+              <div className="text-base font-black tracking-[0.2em] text-white">
+                {code}
+              </div>
+            </div>
+            <div className="text-center">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-white/40">
+                Pass
+              </div>
+              <div className="bg-gradient-to-r from-fuchsia-500 to-pink-500 bg-clip-text text-base font-black tracking-[0.2em] text-transparent">
+                {password || "····"}
+              </div>
+            </div>
+            {queue[0] && (
+              <div className="max-w-[220px] border-l border-white/10 pl-4 text-left">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-white/40">
+                  Next up
+                </div>
+                <div className="truncate text-sm font-medium">
+                  {queue[0].title}
+                </div>
+                <div className="truncate text-xs text-fuchsia-300">
+                  🎙️ {queue[0].singer}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        <div
+          className={`flex items-center gap-3 ${isFullscreen ? "w-1/4" : "w-1/2"}`}
+        >
           <span className="text-xs tabular-nums text-white/50">
             {formatTime(player?.currentTimeSec ?? 0)}
           </span>

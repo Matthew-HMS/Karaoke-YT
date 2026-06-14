@@ -8,6 +8,7 @@
 
 import { AnimatePresence, motion, Reorder, useDragControls } from "framer-motion";
 import { signIn, signOut, useSession } from "next-auth/react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isValidPassword, normalizePassword } from "@/lib/code";
@@ -264,14 +265,16 @@ export default function RemotePage() {
       </nav>
 
       <div className="flex-1 px-4 py-4">
-        {tab === "search" && (
+        {/* Search stays mounted (just hidden) so results persist when you
+            switch to another tab and back. */}
+        <div className={tab === "search" ? "" : "hidden"}>
           <SearchTab
             onAdd={add}
             onAddMany={addMany}
             onStar={favorite}
             starred={starred}
           />
-        )}
+        </div>
         {tab === "favorites" &&
           (signedIn ? (
             <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
@@ -363,12 +366,12 @@ function RoomMissing({ code }: { code: string }) {
         No active room with code <span className="font-mono font-bold">{code}</span>.
         Check the code, or ask the host to start the room.
       </p>
-      <a
+      <Link
         href="/"
         className="mt-6 rounded-xl bg-white/10 px-5 py-2.5 font-semibold active:scale-95"
       >
         ← Back
-      </a>
+      </Link>
     </main>
   );
 }
@@ -384,6 +387,25 @@ function PasswordGate({
   onSubmit: (pw: string) => void;
 }) {
   const [pw, setPw] = useState("");
+  const [hint, setHint] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Submit using the input's *live DOM value*, not just React state. On phones,
+  // autofill / IME / autocapitalize can commit the last character late, leaving
+  // the controlled `pw` state a step behind — which previously kept the Join
+  // button disabled (dark) even though the field looked complete. Reading the
+  // DOM value here sidesteps that desync entirely.
+  const trySubmit = () => {
+    const val = normalizePassword(inputRef.current?.value ?? pw);
+    if (isValidPassword(val)) {
+      setHint(false);
+      onSubmit(val);
+    } else {
+      setHint(true);
+      inputRef.current?.focus();
+    }
+  };
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center px-6">
       <div className="w-full max-w-xs text-center">
@@ -393,24 +415,37 @@ function PasswordGate({
           Enter the 4-letter password shown on the TV.
         </p>
         <input
+          ref={inputRef}
           value={pw}
-          onChange={(e) => setPw(normalizePassword(e.target.value))}
-          onKeyDown={(e) =>
-            e.key === "Enter" && isValidPassword(pw) && onSubmit(pw)
-          }
+          onChange={(e) => {
+            setPw(normalizePassword(e.target.value));
+            setHint(false);
+          }}
+          onKeyDown={(e) => e.key === "Enter" && trySubmit()}
           autoFocus
           autoCapitalize="characters"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          inputMode="text"
+          maxLength={4}
           placeholder="····"
           className="mt-5 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center text-3xl font-black tracking-[0.4em] uppercase outline-none focus:border-fuchsia-400"
         />
         {showError && (
           <p className="mt-2 text-sm text-amber-400">Incorrect password.</p>
         )}
+        {hint && !showError && (
+          <p className="mt-2 text-sm text-white/50">
+            Enter all 4 characters of the password.
+          </p>
+        )}
+        {/* Always enabled/clickable — validation happens on tap so the button is
+            never stuck in a dark, un-tappable disabled state. */}
         <button
           type="button"
-          onClick={() => isValidPassword(pw) && onSubmit(pw)}
-          disabled={!isValidPassword(pw)}
-          className="mt-4 w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-pink-500 py-3 font-bold disabled:opacity-40 active:scale-[0.99]"
+          onClick={trySubmit}
+          className="mt-4 w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-pink-500 py-3 font-bold active:scale-[0.99]"
         >
           Join
         </button>

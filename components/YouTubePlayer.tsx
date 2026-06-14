@@ -137,6 +137,11 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
                 currentTimeSec: p.getCurrentTime(),
                 durationSec: p.getDuration(),
               });
+            } else if (e.data === 5 || e.data === -1) {
+              // CUED (5) / UNSTARTED (-1): autoplay didn't kick in — common on
+              // flaky wifi, where the video loads but never starts until the
+              // user clicks play. Nudge it so the host doesn't have to.
+              p.playVideo();
             }
           },
           onError: (e: { data: number }) => {
@@ -157,7 +162,15 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
       reportTimer = setInterval(() => {
         const p = playerRef.current;
         if (!p || !currentVideo.current || !window.YT) return;
-        if (p.getPlayerState() !== window.YT.PlayerState.PLAYING) return;
+        const state = p.getPlayerState();
+        // Watchdog for stalled autoplay: a flaky connection can leave the
+        // video parked at CUED (5) or UNSTARTED (-1). Keep nudging it to play
+        // so it recovers on its own without anyone clicking the video.
+        if (state === 5 || state === -1) {
+          p.playVideo();
+          return;
+        }
+        if (state !== window.YT.PlayerState.PLAYING) return;
         const duration = p.getDuration();
         if (!duration) return;
         cbs.current.onReport({
