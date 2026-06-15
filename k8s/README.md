@@ -116,6 +116,34 @@ nginx is untouched by deploys (it points at the stable NodePort).
 
 **Rollback a bad image:** `kubectl -n karaoke set image deployment/singalong app=ghcr.io/<owner>/<repo>:sha-<previous>`.
 
+## Backups
+
+A daily CronJob ([base/cronjob-backup.yaml](base/cronjob-backup.yaml)) takes a
+**consistent** snapshot of `singalong.db` (SQLite's online `.backup()` via the app
+image), integrity-checks it, gzips it, and keeps the **14 newest** on the
+`singalong-backups` PVC.
+
+```bash
+kubectl -n karaoke create job --from=cronjob/singalong-backup backup-now   # run on demand
+kubectl -n karaoke logs job/backup-now
+```
+
+**Restore** a snapshot:
+
+```bash
+kubectl -n karaoke scale deploy/singalong --replicas=0          # release the DB
+# list snapshots, then gunzip the chosen one over the live DB via a throwaway pod
+# that mounts both PVCs:
+kubectl -n karaoke run restore --rm -it --restart=Never --image=ghcr.io/matthew-hms/karaoke-yt:latest \
+  --overrides='{"spec":{"containers":[{"name":"r","image":"ghcr.io/matthew-hms/karaoke-yt:latest","command":["sh","-c","ls -1 /backup; echo pick one, then: gunzip -c /backup/<file>.db.gz > /data/singalong.db"],"volumeMounts":[{"name":"d","mountPath":"/data"},{"name":"b","mountPath":"/backup"}]}],"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"singalong-data"}},{"name":"b","persistentVolumeClaim":{"claimName":"singalong-backups"}}]}}'
+kubectl -n karaoke scale deploy/singalong --replicas=1
+```
+
+> **Off-node durability:** snapshots sit on a node-local PVC (same node as the
+> data), so they cover corruption / bad deploys / accidental deletes — **not** node
+> loss. For that, add an rclone step to the CronJob that ships `/backup` to object
+> storage (OCI Object Storage / S3) with creds from a Secret.
+
 ## Operating notes
 
 - **One replica is mandatory**, not a default — see the note in

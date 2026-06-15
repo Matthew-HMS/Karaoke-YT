@@ -6,10 +6,12 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - pvc.yaml
+  - backup-pvc.yaml
   - rbac.yaml
   - deployment.yaml
   - service.yaml
   - cronjob-ytdlp.yaml
+  - cronjob-backup.yaml
 
 # CI updates this tag per deploy: `kustomize edit set image
 # ghcr.io/matthew-hms/karaoke-yt=ghcr.io/matthew-hms/karaoke-yt:sha-<sha>`.

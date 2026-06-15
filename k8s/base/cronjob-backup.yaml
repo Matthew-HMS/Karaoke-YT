@@ -1,0 +1,71 @@
+# Daily consistent backup of the favorites SQLite DB. Uses the app image (which
+# already ships better-sqlite3) so we can use SQLite's online .backup() API for a
+# clean snapshot even while the app is writing — not a torn `cp`. Snapshots are
+# integrity-checked, gzipped, and pruned to the 14 newest.
+#
+# NOTE: backups land on a node-local PVC (same node as the data). This protects
+# against DB corruption, bad deploys, and accidental deletes — but NOT node-disk
+# loss. For off-node durability, add a step that ships /backup to object storage
+# (e.g. rclone to OCI Object Storage / S3 with creds from a Secret).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: singalong-backup
+  namespace: karaoke
+spec:
+  schedule: "30 4 * * *" # daily 04:30 (after the 04:00 yt-dlp refresh)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: backup
+              image: ghcr.io/matthew-hms/karaoke-yt:latest
+              workingDir: /app
+              # Override the app entrypoint; just run a one-shot node script.
+              command: ["node", "-e"]
+              args:
+                - |
+                  const Database = require('better-sqlite3');
+                  const fs = require('fs'), zlib = require('zlib');
+                  const dir = '/backup';
+                  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                  const tmp = `${dir}/singalong-${ts}.db`;
+                  const src = new Database('/data/singalong.db');
+                  src.backup(tmp).then(() => {
+                    src.close();
+                    const c = new Database(tmp);
+                    const ok = c.pragma('integrity_check', { simple: true });
+                    c.close();
+                    if (ok !== 'ok') throw new Error('integrity_check: ' + ok);
+                    fs.writeFileSync(`${tmp}.gz`, zlib.gzipSync(fs.readFileSync(tmp)));
+                    fs.unlinkSync(tmp);
+                    const keep = 14;
+                    fs.readdirSync(dir)
+                      .filter((f) => /^singalong-.*\.db\.gz$/.test(f))
+                      .sort().reverse().slice(keep)
+                      .forEach((f) => fs.unlinkSync(`${dir}/${f}`));
+                    console.log('backup ok ->', `${tmp}.gz`);
+                  }).catch((e) => { console.error(e); process.exit(1); });
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: singalong-data
+            - name: backup
+              persistentVolumeClaim:
+                claimName: singalong-backups
