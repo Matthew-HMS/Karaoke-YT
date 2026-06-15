@@ -33,7 +33,17 @@ const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
-  const httpServer = createServer((req, res) => handle(req, res));
+  const httpServer = createServer((req, res) => {
+    // Liveness/readiness probe for Kubernetes. We're inside app.prepare()'s
+    // resolution, so Next is ready by the time this server is listening.
+    if (req.url === "/healthz") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/plain");
+      res.end("ok");
+      return;
+    }
+    handle(req, res);
+  });
 
   const io = new SocketIOServer<ClientToServerEvents, ServerToClientEvents>(
     httpServer,
@@ -176,4 +186,16 @@ app.prepare().then(() => {
   httpServer.listen(port, () => {
     console.log(`> SingAlong ready on http://${hostname}:${port}`);
   });
+
+  // Kubernetes sends SIGTERM before killing the pod (deploys, scale-down,
+  // node drain). Close Socket.IO (disconnecting clients cleanly) and the HTTP
+  // server so in-flight requests finish, then exit. A timeout forces exit if
+  // something hangs, so a wedged shutdown can't block the rollout.
+  const shutdown = (signal: string) => {
+    console.log(`> ${signal} received — shutting down`);
+    io.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 10_000).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 });

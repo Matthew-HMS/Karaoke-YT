@@ -1,0 +1,30 @@
+# Keeps yt-dlp fresh without a rebuild: a daily rollout restart re-runs the
+# container entrypoint, which self-updates yt-dlp on start. Single replica means
+# this is a few seconds' blip (Recreate), which is fine overnight.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: singalong-ytdlp-refresh
+  namespace: karaoke
+spec:
+  schedule: "0 4 * * *" # 04:00 daily (server time)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: singalong-restarter
+          restartPolicy: Never
+          containers:
+            - name: kubectl
+              image: bitnami/kubectl:1.28
+              command:
+                - kubectl
+                - -n
+                - karaoke
+                - rollout
+                - restart
+                - deployment/singalong

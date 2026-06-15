@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.github
+.env*
+*.local
+npm-debug.log*
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+Dockerfile
+.dockerignore
+k8s
+deploy
+README.md

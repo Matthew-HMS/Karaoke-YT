@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: singalong-config
+  namespace: karaoke
+data:
+  # Non-secret runtime config. Secrets (AUTH_*, YOUTUBE_API_KEY) come from the
+  # `singalong-secrets` Secret created out-of-band — see k8s/README.md.
+  NODE_ENV: "production"
+  DB_PATH: "/data/singalong.db"
+  YTDLP_PATH: "/usr/local/bin/yt-dlp"
+  # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
+  # redirects). Replace EXAMPLE everywhere before applying.
+  AUTH_URL: "https://sho-karaoke.duckdns.org"
+  AUTH_TRUST_HOST: "true"

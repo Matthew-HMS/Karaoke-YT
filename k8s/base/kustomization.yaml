@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: karaoke
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - pvc.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - cronjob-ytdlp.yaml
+
+# CI updates this tag per deploy: `kustomize edit set image
+# ghcr.io/matthew-hms/karaoke-yt=ghcr.io/matthew-hms/karaoke-yt:sha-<sha>`.
+images:
+  - name: ghcr.io/matthew-hms/karaoke-yt
+    newTag: latest

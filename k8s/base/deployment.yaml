@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: singalong
+  namespace: karaoke
+  labels:
+    app: singalong
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): the app holds room state in-memory and writes
+  # SQLite on a ReadWriteOnce volume, so only ONE pod may run at a time. A second
+  # pod would deadlock on the RWO volume. This means a few seconds' downtime per
+  # deploy — acceptable for this app, and the price of single-writer state.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: singalong
+  template:
+    metadata:
+      labels:
+        app: singalong
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # Makes the mounted PVC group-writable by the non-root `node` user.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: ghcr.io/matthew-hms/karaoke-yt:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: singalong-config
+            - secretRef:
+                name: singalong-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # Startup can include `yt-dlp -U` + Next.js warmup, so gate liveness
+          # behind a generous startupProbe, then check health steadily.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              # yt-dlp spawns python for search; give headroom for spikes.
+              cpu: "1"
+              memory: "768Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: singalong-data

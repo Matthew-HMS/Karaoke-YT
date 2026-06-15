@@ -1,0 +1,30 @@
+# Minimal permissions for the yt-dlp refresh CronJob to restart the Deployment.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: singalong-restarter
+  namespace: karaoke
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: singalong-restarter
+  namespace: karaoke
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: singalong-restarter
+  namespace: karaoke
+subjects:
+  - kind: ServiceAccount
+    name: singalong-restarter
+    namespace: karaoke
+roleRef:
+  kind: Role
+  name: singalong-restarter
+  apiGroup: rbac.authorization.k8s.io

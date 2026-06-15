@@ -75,7 +75,14 @@ Environment (`.env.local`):
 - `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL` — Google
   sign-in. `AUTH_URL` must be your public origin (required behind a proxy/tunnel).
 
-## Deploy (Oracle Cloud / GCP VM)
+## Deploy
+
+Two supported paths:
+- **Kubernetes (production)** — single-replica Deployment behind ingress-nginx
+  with cert-manager TLS, image built in CI → GHCR. See **[k8s/README.md](k8s/README.md)**.
+- **Single VM + systemd** — the simpler setup below.
+
+### Single VM (Oracle Cloud / GCP VM)
 
 1. **Provision** an always-free VM (Oracle Ampere is generous) running Ubuntu.
 2. **Domain:** a free [DuckDNS](https://www.duckdns.org) subdomain pointed at the
