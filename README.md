@@ -78,8 +78,9 @@ Environment (`.env.local`):
 ## Deploy
 
 Two supported paths:
-- **Kubernetes (production)** — single-replica Deployment behind ingress-nginx
-  with cert-manager TLS, image built in CI → GHCR. See **[k8s/README.md](k8s/README.md)**.
+- **Kubernetes (production)** — single-replica Deployment exposed as a NodePort,
+  fronted by the node's existing Caddy (TLS), image built in CI → GHCR. See
+  **[k8s/README.md](k8s/README.md)**.
 - **Single VM + systemd** — the simpler setup below.
 
 ### Single VM (Oracle Cloud / GCP VM)

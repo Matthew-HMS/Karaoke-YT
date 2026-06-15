@@ -4,8 +4,8 @@ name: Deploy to Oracle VM
 # into the VM and runs the update steps there — the app is built ON the VM so
 # the native better-sqlite3 binary and the custom tsx server match the VM's arch.
 on:
-  push:
-    branches: [main]
+  # push:
+  #   branches: [main]
   workflow_dispatch:
 
 # Never run two deploys at once; let an in-flight one finish.

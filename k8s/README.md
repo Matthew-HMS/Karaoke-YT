@@ -1,18 +1,16 @@
 # Deploying SingAlong on Kubernetes
 
 Production deployment for the `wafer-order-management` cluster (kubeadm, 3× arm64
-Oracle nodes, ingress-nginx, containerd). SingAlong runs as a **single replica**
-(in-memory room state + single-writer SQLite), behind ingress-nginx with
-cert-manager TLS. Images are built in CI and pushed to GHCR.
+Oracle nodes, containerd). SingAlong runs as a **single replica** (in-memory room
+state + single-writer SQLite), exposed as a **NodePort** Service. The **existing
+host Caddy** on the control-plane node (the single public entry point) terminates
+TLS and reverse-proxies `sho-karaoke.duckdns.org` to it — so no ingress-nginx,
+cert-manager, or DNS changes are needed. Images are built in CI → GHCR.
 
-> Replace `EXAMPLE.duckdns.org` with your real DuckDNS host in
-> [base/configmap.yaml](base/configmap.yaml) and [base/ingress.yaml](base/ingress.yaml)
-> before applying. (The Let's Encrypt email is passed to the webhook chart in step 3.)
+> `AUTH_URL` in [base/configmap.yaml](base/configmap.yaml) must match your public
+> domain (already `https://sho-karaoke.duckdns.org`).
 
 ## One-time cluster setup
-
-Run these once. They add isolated, cluster-wide components that don't touch your
-existing `production`/`staging` workloads.
 
 ### 1. Storage — local-path-provisioner
 
@@ -21,68 +19,17 @@ kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisione
 kubectl -n local-path-storage get pod   # wait for Running
 ```
 
-This creates a `local-path` StorageClass. (Data lands under `/opt/local-path-provisioner`
-on whichever node the pod schedules to.)
-
-### 2. Edge — expose ingress-nginx on :80/:443
-
-The controller is currently `NodePort` (:30554/:32328). Make one node listen on
-the standard ports via `hostPort`, then open them in Oracle:
-
-```bash
-kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type=json -p '[
-  {"op":"add","path":"/spec/template/spec/containers/0/ports/-","value":{"name":"http-host","containerPort":80,"hostPort":80}},
-  {"op":"add","path":"/spec/template/spec/containers/0/ports/-","value":{"name":"https-host","containerPort":443,"hostPort":443}}
-]'
-```
-
-Then:
-- **Oracle Security List / NSG:** allow ingress TCP **80** and **443** from `0.0.0.0/0`.
-- **Host firewall** (if `iptables`/`ufw` on the node blocks it): allow 80/443.
-- **DuckDNS:** point your subdomain at that node's **public IP**.
-
-Verify from outside: `curl -I http://EXAMPLE.duckdns.org` should reach nginx (404
-from nginx is fine — it means traffic arrives).
-
-### 3. TLS — cert-manager + DuckDNS DNS-01 webhook
-
-The webhook chart installs the DNS-01 solver, stores your DuckDNS token, **and
-creates the ClusterIssuers** — so there's no separate issuer or token secret to
-apply by hand.
-
-```bash
-# cert-manager
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
-kubectl -n cert-manager rollout status deploy/cert-manager-webhook
-
-# DuckDNS DNS-01 webhook + ClusterIssuers. The chart is NOT on a hosted helm
-# repo, so install from the cloned chart path. (token from https://www.duckdns.org)
-git clone https://github.com/ebrianne/cert-manager-webhook-duckdns.git
-helm install cert-manager-webhook-duckdns \
-  ./cert-manager-webhook-duckdns/deploy/cert-manager-webhook-duckdns \
-  --namespace cert-manager \
-  --set duckdns.token='YOUR_DUCKDNS_TOKEN' \
-  --set clusterIssuer.production.create=true \
-  --set clusterIssuer.staging.create=true \
-  --set clusterIssuer.email='you@example.com' \
-  --set logLevel=2
-
-kubectl get clusterissuer   # expect cert-manager-webhook-duckdns-{production,staging}
-```
-
-The Ingress references `cert-manager-webhook-duckdns-production`. **Tip:** to avoid
-Let's Encrypt rate limits while testing, first set the Ingress annotation
-`cert-manager.io/cluster-issuer` to `...-staging`, confirm a cert issues, then
-switch back to `...-production`.
+Creates a `local-path` StorageClass (data lands under `/opt/local-path-provisioner`
+on whichever node the pod schedules to).
 
 ## App deployment
 
-### 4. Secrets (out-of-band — never committed)
+### 2. Secrets (out-of-band — never committed)
 
-From your `.env.local` values:
+Reuse the same values as the old systemd app's `.env.local`:
 
 ```bash
-kubectl create namespace karaoke   # or let the kustomize apply create it first
+kubectl create namespace karaoke
 kubectl -n karaoke create secret generic singalong-secrets \
   --from-literal=AUTH_SECRET='...' \
   --from-literal=AUTH_GOOGLE_ID='...' \
@@ -90,7 +37,7 @@ kubectl -n karaoke create secret generic singalong-secrets \
   --from-literal=YOUTUBE_API_KEY='...'
 ```
 
-### 5. GHCR image pull
+### 3. GHCR image pull
 
 Make the GHCR package **public** (simplest — no pull secret needed):
 GitHub → repo → Packages → `karaoke-yt` → Package settings → Change visibility → Public.
@@ -104,26 +51,50 @@ kubectl -n karaoke create secret docker-registry ghcr-pull \
 # then add `imagePullSecrets: [{name: ghcr-pull}]` to base/deployment.yaml's pod spec.
 ```
 
-### 6. Apply
+### 4. Apply + verify (without touching the live site)
+
+The old app keeps serving the domain through Caddy; this just brings up the pod
+and its NodePort alongside it.
 
 ```bash
 kubectl apply -k base/
 kubectl -n karaoke rollout status deployment/singalong
-kubectl -n karaoke get pod,svc,ingress,pvc,certificate
+kubectl -n karaoke get pod,svc,pvc
+
+# Smoke-test the new app directly via its NodePort (run on the control-plane node;
+# 10.0.0.32 is its internal IP). Expect "ok".
+curl -s http://10.0.0.32:30080/healthz
 ```
 
-Watch the cert issue (DNS-01 can take a couple minutes):
+### 5. Cut over Caddy
+
+In the node's Caddy config (e.g. `deploy/Caddyfile` / `/etc/caddy/Caddyfile`),
+repoint the site from the old systemd app to the NodePort. Caddy proxies
+WebSockets automatically, so Socket.IO just works:
+
+```caddyfile
+sho-karaoke.duckdns.org {
+    reverse_proxy 10.0.0.32:30080
+}
+```
 
 ```bash
-kubectl -n karaoke describe certificate singalong-tls
+sudo systemctl reload caddy          # or: caddy reload --config /etc/caddy/Caddyfile
+# Verify the public site now serves the k8s pod:
+curl -sI https://sho-karaoke.duckdns.org
+
+# Once happy, stop the old systemd app so it isn't double-running:
+sudo systemctl disable --now singalong
 ```
 
-When `singalong-tls` is Ready, open `https://EXAMPLE.duckdns.org`.
+**Rollback (seconds):** revert the `reverse_proxy` line back to the old app
+(`localhost:3000`), `systemctl reload caddy`, and `systemctl start singalong`.
 
-### 7. Google OAuth
+### 6. Google OAuth
 
-Add `https://EXAMPLE.duckdns.org/api/auth/callback/google` to the OAuth client's
-authorized redirect URIs in Google Cloud Console.
+The redirect URI `https://sho-karaoke.duckdns.org/api/auth/callback/google` is the
+**same domain the old app already uses**, so it's almost certainly already
+registered in Google Cloud — just confirm sign-in works after cutover.
 
 ## Continuous deploy
 
@@ -132,8 +103,9 @@ the arm64 image, pushes `ghcr.io/<owner>/<repo>:sha-<commit>` + `:latest`, then
 SSHes to the control-plane node and `kubectl set image` to that immutable tag.
 Reuses the existing repo secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PORT`,
 `DEPLOY_SSH_KEY`; the SSH user needs a working `kubectl` (kubeconfig) on the node.
+Caddy is untouched by deploys (it points at the stable NodePort).
 
-**Rollback:** `kubectl -n karaoke set image deployment/singalong app=ghcr.io/<owner>/<repo>:sha-<previous>`.
+**Rollback a bad image:** `kubectl -n karaoke set image deployment/singalong app=ghcr.io/<owner>/<repo>:sha-<previous>`.
 
 ## Operating notes
 
@@ -147,3 +119,7 @@ Reuses the existing repo secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PORT`,
 - **Storage is node-local.** If the node holding the volume dies, the favorites DB
   is unavailable until it returns. Favorites are the only durable state; rooms are
   ephemeral by design.
+- **TLS stays with Caddy** (auto-renew, already proven on this node). Nothing in
+  k8s handles certs.
+```
+

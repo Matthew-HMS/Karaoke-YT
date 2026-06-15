@@ -6,10 +6,14 @@ metadata:
   labels:
     app: singalong
 spec:
-  type: ClusterIP
+  # NodePort so the host Caddy on the control-plane node can reach the app at
+  # <node-ip>:30080 and reverse-proxy the public domain to it (TLS terminates at
+  # Caddy). 30080 is free on this cluster (existing NodePorts: 30001/30002/30554/32328).
+  type: NodePort
   selector:
     app: singalong
   ports:
     - name: http
       port: 80
       targetPort: http
+      nodePort: 30080

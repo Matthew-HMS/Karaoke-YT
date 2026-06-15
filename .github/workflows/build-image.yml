@@ -12,9 +12,17 @@ on:
       - "deploy/**"
   workflow_dispatch:
 
+# Never let two image-build/deploys race the rollout; let an in-flight one finish.
+concurrency:
+  group: k8s-deploy
+  cancel-in-progress: false
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Native arm64 runner (free for public repos) — no QEMU emulation, so the
+    # better-sqlite3 native compile + `next build` run at full speed (~minutes
+    # instead of ~20). Matches the cluster's arm64 nodes.
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -37,9 +45,6 @@ jobs:
           tags: |
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3

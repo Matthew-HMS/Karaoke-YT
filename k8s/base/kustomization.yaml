@@ -9,7 +9,6 @@ resources:
   - rbac.yaml
   - deployment.yaml
   - service.yaml
-  - ingress.yaml
   - cronjob-ytdlp.yaml
 
 # CI updates this tag per deploy: `kustomize edit set image
