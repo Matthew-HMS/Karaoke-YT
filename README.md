@@ -79,7 +79,7 @@ Environment (`.env.local`):
 
 Two supported paths:
 - **Kubernetes (production)** — single-replica Deployment exposed as a NodePort,
-  fronted by the node's existing Caddy (TLS), image built in CI → GHCR. See
+  fronted by the node's existing nginx (TLS), image built in CI → GHCR. See
   **[k8s/README.md](k8s/README.md)**.
 - **Single VM + systemd** — the simpler setup below.
 

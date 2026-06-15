@@ -3,7 +3,7 @@
 Production deployment for the `wafer-order-management` cluster (kubeadm, 3× arm64
 Oracle nodes, containerd). SingAlong runs as a **single replica** (in-memory room
 state + single-writer SQLite), exposed as a **NodePort** Service. The **existing
-host Caddy** on the control-plane node (the single public entry point) terminates
+host nginx** on the control-plane node (the single public entry point) terminates
 TLS and reverse-proxies `sho-karaoke.duckdns.org` to it — so no ingress-nginx,
 cert-manager, or DNS changes are needed. Images are built in CI → GHCR.
 
@@ -66,29 +66,38 @@ kubectl -n karaoke get pod,svc,pvc
 curl -s http://10.0.0.32:30080/healthz
 ```
 
-### 5. Cut over Caddy
+### 5. Cut over nginx
 
-In the node's Caddy config (e.g. `deploy/Caddyfile` / `/etc/caddy/Caddyfile`),
-repoint the site from the old systemd app to the NodePort. Caddy proxies
-WebSockets automatically, so Socket.IO just works:
+This node fronts TLS with **nginx** (`/etc/nginx`). Find the vhost for the domain
+and repoint its `proxy_pass` from the old app to the NodePort, keeping the
+WebSocket upgrade headers (Socket.IO needs them):
 
-```caddyfile
-sho-karaoke.duckdns.org {
-    reverse_proxy 10.0.0.32:30080
+```bash
+grep -rn 'sho-karaoke' /etc/nginx/    # locate the vhost file
+```
+
+In that server block's `location /`:
+
+```nginx
+location / {
+    proxy_pass http://10.0.0.32:30080;   # was 127.0.0.1:3000 (old systemd app)
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
 ```bash
-sudo systemctl reload caddy          # or: caddy reload --config /etc/caddy/Caddyfile
-# Verify the public site now serves the k8s pod:
-curl -sI https://sho-karaoke.duckdns.org
-
-# Once happy, stop the old systemd app so it isn't double-running:
-sudo systemctl disable --now singalong
+sudo nginx -t && sudo systemctl reload nginx   # validate, then apply
+curl -sI https://sho-karaoke.duckdns.org       # verify the public site
+sudo systemctl disable --now singalong         # stop the old app once happy
 ```
 
-**Rollback (seconds):** revert the `reverse_proxy` line back to the old app
-(`localhost:3000`), `systemctl reload caddy`, and `systemctl start singalong`.
+**Rollback (seconds):** set `proxy_pass` back to `http://127.0.0.1:3000;`, then
+`sudo nginx -t && sudo systemctl reload nginx` and `sudo systemctl start singalong`.
 
 ### 6. Google OAuth
 
@@ -103,7 +112,7 @@ the arm64 image, pushes `ghcr.io/<owner>/<repo>:sha-<commit>` + `:latest`, then
 SSHes to the control-plane node and `kubectl set image` to that immutable tag.
 Reuses the existing repo secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PORT`,
 `DEPLOY_SSH_KEY`; the SSH user needs a working `kubectl` (kubeconfig) on the node.
-Caddy is untouched by deploys (it points at the stable NodePort).
+nginx is untouched by deploys (it points at the stable NodePort).
 
 **Rollback a bad image:** `kubectl -n karaoke set image deployment/singalong app=ghcr.io/<owner>/<repo>:sha-<previous>`.
 
@@ -119,7 +128,7 @@ Caddy is untouched by deploys (it points at the stable NodePort).
 - **Storage is node-local.** If the node holding the volume dies, the favorites DB
   is unavailable until it returns. Favorites are the only durable state; rooms are
   ephemeral by design.
-- **TLS stays with Caddy** (auto-renew, already proven on this node). Nothing in
-  k8s handles certs.
+- **TLS stays with nginx** (already proven on this node). Nothing in k8s handles
+  certs.
 ```
 
