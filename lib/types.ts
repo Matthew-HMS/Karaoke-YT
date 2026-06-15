@@ -42,7 +42,10 @@ export interface ClientToServerEvents {
       code: string;
       role: "host" | "remote";
       name?: string;
-      password?: string; // host sets it; guest supplies it to be let in
+      password?: string; // create/co-host/guest all supply it
+      create?: boolean; // host only: true = create this room (from the landing
+      // "Start a room" flow). Co-hosts and typed URLs leave it false, so an
+      // existing room is joined (password-checked) and a missing one is rejected.
     },
     ack?: (state: RoomState | { error: "not_found" | "bad_password" }) => void
   ) => void;
@@ -51,7 +54,9 @@ export interface ClientToServerEvents {
   "queue:reorder": (payload: { code: string; order: string[] }) => void;
   "player:command": (payload: { code: string } & PlayerCommand) => void;
   "player:report": (payload: { code: string; state: PlayerState }) => void;
-  "player:ended": (payload: { code: string }) => void;
+  // itemId = the queue-item id that ended; lets the server ignore duplicate
+  // "ended" events from other hosts so the queue only advances once.
+  "player:ended": (payload: { code: string; itemId?: string }) => void;
   // A remote triggers a sound effect; the host (TV) plays it.
   "sfx:play": (payload: { code: string; name: SfxName }) => void;
 }

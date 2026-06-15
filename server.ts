@@ -15,7 +15,7 @@ import {
 import {
   addToQueue,
   advanceQueue,
-  getOrCreateRoom,
+  createRoom,
   getRoom,
   removeFromQueue,
   reorderQueue,
@@ -61,12 +61,23 @@ app.prepare().then(() => {
   io.on("connection", (socket) => {
     let joinedCode: string | null = null;
 
-    socket.on("room:join", ({ code, role, password }, ack) => {
+    socket.on("room:join", ({ code, role, password, create }, ack) => {
       let room = getRoom(code);
       if (role === "host") {
-        // The host owns the room: create it if needed and set its password.
-        room = getOrCreateRoom(code);
-        if (password) room.password = password;
+        if (!room) {
+          // Only the creator (landing "Start a room" flow) may make a room.
+          // A typed/unknown host URL is just "room not found".
+          if (!create) {
+            ack?.({ error: "not_found" });
+            return;
+          }
+          room = createRoom(code, password ?? "");
+        } else if (room.password && password !== room.password) {
+          // Co-hosting an existing room needs its password — and we never let a
+          // co-host overwrite the password the room was created with.
+          ack?.({ error: "bad_password" });
+          return;
+        }
         room.hostSocketId = socket.id;
       } else {
         // A guest must join an EXISTING room with the correct password.
@@ -121,8 +132,10 @@ app.prepare().then(() => {
         }
         broadcastState(code);
       }
-      // Always relay to the host so it can act on the iframe.
-      if (room.hostSocketId) io.to(room.hostSocketId).emit("player:command", cmd);
+      // Relay to EVERY host in the room (a room can have several host screens
+      // open) so they all act on the command and stay in sync. Remotes have no
+      // player and ignore it.
+      io.to(code).emit("player:command", cmd);
     });
 
     // Host → everyone: report real playback position for the live scrub bar.
@@ -139,10 +152,13 @@ app.prepare().then(() => {
       io.to(code).emit("sfx:play", { name });
     });
 
-    // Host: current video ended → advance the queue and resync.
-    socket.on("player:ended", ({ code }) => {
+    // Host: current video ended → advance the queue and resync. With multiple
+    // host screens, each fires "ended" for the same song; only advance once by
+    // ignoring events whose itemId no longer matches the current song.
+    socket.on("player:ended", ({ code, itemId }) => {
       const room = getRoom(code);
       if (!room) return;
+      if (itemId && room.nowPlaying && room.nowPlaying.id !== itemId) return;
       const prevId = room.nowPlaying?.id;
       advanceQueue(room);
       recordIfNewSong(prevId, room.nowPlaying);

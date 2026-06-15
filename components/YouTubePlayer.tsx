@@ -22,6 +22,7 @@ type YTPlayer = {
   getCurrentTime: () => number;
   getDuration: () => number;
   getPlayerState: () => number;
+  setVolume: (volume: number) => void;
   destroy: () => void;
 };
 
@@ -40,6 +41,7 @@ export type PlayerHandle = {
   pause: () => void;
   seek: (sec: number) => void;
   restart: () => void;
+  setVolume: (volume: number) => void;
 };
 
 type Props = {
@@ -47,6 +49,9 @@ type Props = {
   onReport: (state: PlayerState) => void;
   onEnded: () => void;
   onError: (videoId: string) => void;
+  // Fires once the player is actually playing (and therefore seekable), so the
+  // host can sync a late-opened screen to the in-progress position.
+  onReady?: () => void;
 };
 
 let apiLoading: Promise<void> | null = null;
@@ -70,21 +75,26 @@ function loadYouTubeApi(): Promise<void> {
 }
 
 export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePlayer(
-  { videoId, onReport, onEnded, onError },
+  { videoId, onReport, onEnded, onError, onReady },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
   const currentVideo = useRef<string | null>(null);
+  // Fire onReady only on the first time playback actually starts.
+  const readyFired = useRef(false);
   // Keep latest callbacks without re-initializing the player.
-  const cbs = useRef({ onReport, onEnded, onError });
-  cbs.current = { onReport, onEnded, onError };
+  const cbs = useRef({ onReport, onEnded, onError, onReady });
+  cbs.current = { onReport, onEnded, onError, onReady };
 
   useImperativeHandle(ref, () => ({
     play: () => playerRef.current?.playVideo(),
     pause: () => playerRef.current?.pauseVideo(),
     seek: (sec) => playerRef.current?.seekTo(sec, true),
     restart: () => playerRef.current?.seekTo(0, true),
+    // 0–100. The player keeps its volume across loadVideoById, so this sticks
+    // for the whole session once set.
+    setVolume: (volume) => playerRef.current?.setVolume(volume),
   }));
 
   // Initialize the player once.
@@ -131,6 +141,10 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
                 currentTimeSec: p.getCurrentTime(),
                 durationSec: p.getDuration(),
               });
+              if (!readyFired.current) {
+                readyFired.current = true;
+                cbs.current.onReady?.();
+              }
             } else if (e.data === YT.PlayerState.PAUSED) {
               cbs.current.onReport({
                 status: "paused",
@@ -207,5 +221,16 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
     playerRef.current.loadVideoById(videoId);
   }, [videoId]);
 
-  return <div className="h-full w-full" ref={containerRef} />;
+  return (
+    <div className="relative h-full w-full">
+      <div className="h-full w-full" ref={containerRef} />
+      {/* Transparent overlay that swallows clicks/taps so YouTube's own
+          play/pause (native controls, and tap-to-pause) can't be used. That
+          path changes only THIS screen and never reaches the other hosts,
+          breaking sync. With it blocked, all playback goes through our own
+          controls, which broadcast to every host. The tap still counts as a
+          page interaction, satisfying autoplay policies. */}
+      <div className="absolute inset-0 z-10" aria-hidden />
+    </div>
+  );
 });

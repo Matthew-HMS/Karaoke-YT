@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   generateClientCode,
   isValidCode,
@@ -14,16 +14,34 @@ export default function Landing() {
   const router = useRouter();
   const [joinCode, setJoinCode] = useState("");
   const [pw, setPw] = useState("");
+  // Validate on click against the live input value (not just React state) so a
+  // controlled-state desync can't strand the user. Buttons stay clickable —
+  // a disabled button that won't fire is its own bug.
+  const pwRef = useRef<HTMLInputElement>(null);
+  const joinRef = useRef<HTMLInputElement>(null);
+  const [pwHint, setPwHint] = useState(false);
+  const [joinHint, setJoinHint] = useState(false);
 
   // Host picks a 4-char password; stash it for the host page to set on the room.
   const createRoom = () => {
-    if (!isValidPassword(pw)) return;
+    const val = normalizePassword(pwRef.current?.value ?? pw);
+    if (!isValidPassword(val)) {
+      setPwHint(true);
+      pwRef.current?.focus();
+      return;
+    }
     const code = generateClientCode();
-    sessionStorage.setItem(`host-pw-${code}`, pw);
+    sessionStorage.setItem(`host-pw-${code}`, val);
     router.push(`/host/${code}`);
   };
   const joinRoom = () => {
-    if (isValidCode(joinCode)) router.push(`/r/${joinCode}`);
+    const val = normalizeCode(joinRef.current?.value ?? joinCode);
+    if (!isValidCode(val)) {
+      setJoinHint(true);
+      joinRef.current?.focus();
+      return;
+    }
+    router.push(`/r/${val}`);
   };
 
   return (
@@ -39,23 +57,32 @@ export default function Landing() {
 
         <div className="mt-10 space-y-3">
           <input
+            ref={pwRef}
             value={pw}
-            onChange={(e) => setPw(normalizePassword(e.target.value))}
+            onChange={(e) => {
+              setPw(normalizePassword(e.target.value));
+              setPwHint(false);
+            }}
             onKeyDown={(e) => e.key === "Enter" && createRoom()}
             placeholder="SET A 4-CHAR PASSWORD"
             autoCapitalize="characters"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            maxLength={4}
             className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center text-xl font-bold tracking-[0.3em] uppercase outline-none focus:border-fuchsia-400"
           />
           <button
             type="button"
             onClick={createRoom}
-            disabled={!isValidPassword(pw)}
-            className="w-full rounded-2xl bg-gradient-to-r from-fuchsia-500 to-pink-500 px-6 py-4 text-lg font-bold text-white shadow-lg shadow-fuchsia-500/20 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-40"
+            className="w-full rounded-2xl bg-gradient-to-r from-fuchsia-500 to-pink-500 px-6 py-4 text-lg font-bold text-white shadow-lg shadow-fuchsia-500/20 transition hover:brightness-110 active:scale-[0.99]"
           >
             🎤 Start a room (host screen)
           </button>
-          <p className="text-xs text-white/40">
-            Guests will need this password to join.
+          <p className={`text-xs ${pwHint ? "text-amber-400" : "text-white/40"}`}>
+            {pwHint
+              ? "Enter a 4-character password (letters or numbers)."
+              : "Guests will need this password to join."}
           </p>
         </div>
 
@@ -67,22 +94,34 @@ export default function Landing() {
 
         <div className="space-y-3">
           <input
+            ref={joinRef}
             value={joinCode}
-            onChange={(e) => setJoinCode(normalizeCode(e.target.value))}
+            onChange={(e) => {
+              setJoinCode(normalizeCode(e.target.value));
+              setJoinHint(false);
+            }}
             onKeyDown={(e) => e.key === "Enter" && joinRoom()}
             placeholder="ENTER CODE"
             inputMode="text"
             autoCapitalize="characters"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            maxLength={4}
             className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center text-2xl font-bold tracking-[0.3em] uppercase outline-none focus:border-fuchsia-400"
           />
           <button
             type="button"
             onClick={joinRoom}
-            disabled={!isValidCode(joinCode)}
-            className="w-full rounded-xl bg-white/10 py-3 font-semibold transition hover:bg-white/20 disabled:opacity-30"
+            className="w-full rounded-xl bg-white/10 py-3 font-semibold transition hover:bg-white/20"
           >
             Join
           </button>
+          {joinHint && (
+            <p className="text-xs text-amber-400">
+              Enter the 4-character room code from the host screen.
+            </p>
+          )}
         </div>
         <p className="mt-4 text-sm text-white/40">
           The host screen shows a QR code — scan it, then enter the password.

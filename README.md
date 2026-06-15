@@ -7,16 +7,24 @@ instantly **seek to any part** of a song.
 
 ## Features
 
-- 📺 **Host screen** — plays the video, shows now-playing + up-next, a QR code
-  to join, the **room password**, and a **fullscreen** toggle for the TV.
-- 🔐 **Password-protected rooms** — the host sets a 4-letter password at
-  creation; guests need the code *and* the password (and get a clear "room not
-  found" if the code has no active host).
+- 📺 **Host screen** — the video stays on the left; a phone-sized panel on the
+  right has the **same Search / Faves / Recent / Queue tabs as the remote** (so
+  you can browse/queue while watching), playback controls + seek in the Queue
+  tab, a join QR, the **room password**, and a 🎉 reactions button. A footer
+  **volume slider** sets the TV's level. Responsive (stacks on a phone), with a
+  **fullscreen** toggle for the TV.
+- 🔐 **Password-protected rooms** — the host sets a 4-letter password when
+  creating; guests need the code *and* the password, and **co-hosts** opening
+  the same room must enter it too (they never overwrite it). A code with no
+  active room shows a clear "room not found".
+- 👥 **Multiple hosts / co-hosting** — several TV screens can share one room;
+  play/pause/seek/skip sync across all of them, and a newly-opened host jumps to
+  the song already in progress.
 - 📱 **Phone remote** — search, queue songs with your name, control playback,
   and **scrub/seek live**.
 - 🔎 **Quota-free search** via **yt-dlp** (fallback to the YouTube Data API),
-  with **sort filters** (Top / Most viewed / Newest), **Load more** paging, and
-  your favorites pinned to the top. Paste a single link **or a whole playlist**.
+  with a **"Karaoke versions only"** toggle, **Load more** paging, and your
+  favorites pinned to the top. Paste a single link **or a whole playlist**.
 - 🔄 **Real-time sync** over Socket.IO (queue, play/pause/skip/seek).
 - ↕️ **Drag-to-reorder** the queue (drag the ⠿ grip).
 - 👤 **Sign in with Google** (Auth.js) for **personal favorites**, sortable by

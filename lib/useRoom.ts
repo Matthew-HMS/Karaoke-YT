@@ -15,8 +15,9 @@ import {
 } from "./types";
 
 type UseRoomOpts = {
-  password?: string; // host sets it; remote supplies it to be let in
+  password?: string; // create/co-host/guest credential
   userId?: string; // signed-in user, for per-user play counts
+  create?: boolean; // host only: create the room (landing "Start a room" flow)
 };
 
 export function useRoom(
@@ -24,7 +25,7 @@ export function useRoom(
   role: "host" | "remote",
   opts: UseRoomOpts = {}
 ) {
-  const { password = "", userId } = opts;
+  const { password = "", userId, create = false } = opts;
   const [state, setState] = useState<RoomState | null>(null);
   // The host owns the authoritative player position; remotes receive it via
   // the `player:state` event so the scrub bar can track playback live.
@@ -36,13 +37,26 @@ export function useRoom(
   >(null);
   const [joined, setJoined] = useState(false);
   const socketRef = useRef(getSocket());
+  // Each join attempt gets a sequence number. Several joins can be in flight at
+  // once (the initial empty-password auto-join, reconnect re-joins, and each
+  // password the guest tries), and their acks can arrive out of order. We only
+  // apply the ack from the LATEST attempt — otherwise a slow "bad_password" ack
+  // from an earlier try can clobber a later successful one (flashing "Incorrect
+  // password" even though you got in).
+  const joinSeqRef = useRef(0);
 
   useEffect(() => {
     const socket = socketRef.current;
 
     const join = () => {
       setConnected(true);
-      socket.emit("room:join", { code, role, password }, (res) => {
+      const seq = ++joinSeqRef.current;
+      // Clear any stale error from a previous attempt so the gate doesn't flash
+      // "incorrect" while this new attempt (e.g. the correct password) is still
+      // in flight. The ack below sets the real result.
+      setJoinError(null);
+      socket.emit("room:join", { code, role, password, create }, (res) => {
+        if (seq !== joinSeqRef.current) return; // superseded by a newer attempt
         if (res && "error" in res) {
           setJoinError(res.error);
           setJoined(false);
@@ -69,7 +83,7 @@ export function useRoom(
       socket.off("room:state");
       socket.off("player:state");
     };
-  }, [code, role, password]);
+  }, [code, role, password, create]);
 
   const socket = socketRef.current;
 
@@ -95,7 +109,8 @@ export function useRoom(
       setLivePlayer(s);
       socket.emit("player:report", { code, state: s });
     },
-    notifyEnded: () => socket.emit("player:ended", { code }),
+    notifyEnded: (itemId?: string) =>
+      socket.emit("player:ended", { code, itemId }),
     sendSfx: (name: SfxName) => socket.emit("sfx:play", { code, name }),
   };
 }

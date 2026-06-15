@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" fill="#000"/>
+  <!-- The 🎤 is drawn as text so the browser renders it with the VIEWER's system
+       emoji font — i.e. the same realistic Apple mic shown on the "Queue's empty"
+       screen on Mac/iOS, instead of a baked-in flat emoji. -->
+  <text x="32" y="34" font-size="46" text-anchor="middle" dominant-baseline="central">🎤</text>
+</svg>
