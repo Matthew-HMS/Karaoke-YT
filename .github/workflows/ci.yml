@@ -1,0 +1,36 @@
+name: CI
+
+# Run the type-checker and the test suite on every push and pull request so
+# broken functions are caught before they reach main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` compiles better-sqlite3 from source; build-essential/python3
+      # are present on ubuntu-latest runners, so no extra setup is needed.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      # Lint is informational for now (the app has some pre-existing
+      # react-hooks lint findings); it reports but does not fail the build.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true

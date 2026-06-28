@@ -50,7 +50,9 @@ export function SignInPrompt({ message }: { message: string }) {
   );
 }
 
-// A reusable row: thumbnail + title + optional star + Add.
+// A reusable row: thumbnail + title + optional star + Add. Titles are clamped to
+// two lines to keep rows compact; tap the title to expand the full name (and tap
+// again to re-collapse).
 export function SongRow({
   song,
   onAdd,
@@ -64,17 +66,27 @@ export function SongRow({
   starred?: boolean;
   trailing?: ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <li className="flex items-center gap-3 rounded-xl bg-white/5 p-2">
       <img src={song.thumbnail} alt="" className="h-12 w-20 rounded object-cover" />
-      <div className="min-w-0 flex-1">
-        <div className="line-clamp-2 text-sm font-medium">{song.title}</div>
+      <button
+        type="button"
+        // Tap the title to toggle the full (un-clamped) name.
+        onClick={() => setExpanded((v) => !v)}
+        className="min-w-0 flex-1 cursor-pointer text-left"
+      >
+        <div
+          className={`${expanded ? "" : "line-clamp-2"} text-sm font-medium`}
+        >
+          {song.title}
+        </div>
         {song.durationSec > 0 && (
           <div className="text-xs text-white/40">
             {formatTime(song.durationSec)}
           </div>
         )}
-      </div>
+      </button>
       {trailing}
       {onStar && (
         <button
@@ -99,6 +111,10 @@ export function SongRow({
   );
 }
 
+// The search tab is a flex column: the controls (search field + options) stay
+// fixed at the top while ONLY the results below them scroll. This deterministic
+// layout replaces a `position: sticky` bar, which behaved badly inside the
+// nested flex/overflow containers (gaps + click-through).
 export function SearchTab({
   onAdd,
   onAddMany,
@@ -119,6 +135,11 @@ export function SearchTab({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // After a fresh search, jump back to the top of the results so you start at
+  // the first match instead of wherever you'd scrolled to.
+  const scrollToTop = () => scrollRef.current?.scrollTo({ top: 0 });
 
   const looksLikeUrl = /youtu\.be\/|youtube\.com\//.test(q);
   // A real playlist link (has list=, not an auto-generated radio/mix).
@@ -178,10 +199,16 @@ export function SearchTab({
     []
   );
 
-  const submit = () => runSearch(q, 20, karaokeOnly);
+  const submit = () => {
+    scrollToTop();
+    runSearch(q, 20, karaokeOnly);
+  };
   const toggleKaraoke = (k: boolean) => {
     setKaraokeOnly(k);
-    if (lastQuery) runSearch(lastQuery, 20, k);
+    if (lastQuery) {
+      scrollToTop();
+      runSearch(lastQuery, 20, k);
+    }
   };
   const loadMore = () => runSearch(lastQuery, limit + 20, karaokeOnly, true);
 
@@ -231,82 +258,88 @@ export function SearchTab({
   );
 
   return (
-    <div>
-      <div className="flex gap-2">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !looksLikeUrl) submit();
-          }}
-          enterKeyHint="search"
-          placeholder="Search songs, or paste a YouTube link"
-          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-3 outline-none focus:border-fuchsia-400"
-        />
-        {!looksLikeUrl && (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Fixed controls — never scroll, so the search field is always visible. */}
+      <div className="shrink-0 px-4 pb-3 pt-4">
+        <div className="flex gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !looksLikeUrl) submit();
+            }}
+            enterKeyHint="search"
+            placeholder="Search songs, or paste a YouTube link"
+            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-3 outline-none focus:border-fuchsia-400"
+          />
+          {!looksLikeUrl && (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={loading || !q.trim()}
+              className="shrink-0 rounded-xl bg-fuchsia-500 px-4 font-bold disabled:opacity-40 active:scale-95"
+            >
+              Search
+            </button>
+          )}
+        </div>
+
+        {looksLikeUrl ? (
           <button
             type="button"
-            onClick={submit}
-            disabled={loading || !q.trim()}
-            className="shrink-0 rounded-xl bg-fuchsia-500 px-4 font-bold disabled:opacity-40 active:scale-95"
+            onClick={isPlaylist ? addPlaylist : addPastedLink}
+            disabled={loading}
+            className="mt-3 w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-pink-500 py-3 font-bold disabled:opacity-50"
           >
-            Search
+            {loading
+              ? "Adding…"
+              : isPlaylist
+              ? "➕ Add whole playlist"
+              : "➕ Add this link"}
           </button>
+        ) : (
+          <label className="mt-3 flex items-center gap-2 text-sm text-white/60">
+            <input
+              type="checkbox"
+              checked={karaokeOnly}
+              onChange={(e) => toggleKaraoke(e.target.checked)}
+              className="h-4 w-4 accent-fuchsia-500"
+            />
+            Karaoke versions only
+          </label>
+        )}
+
+        {error && <p className="mt-3 text-sm text-amber-400">{error}</p>}
+        {loading && !looksLikeUrl && (
+          <p className="mt-3 text-sm text-white/40">Searching…</p>
         )}
       </div>
 
-      {looksLikeUrl ? (
-        <button
-          type="button"
-          onClick={isPlaylist ? addPlaylist : addPastedLink}
-          disabled={loading}
-          className="mt-3 w-full rounded-xl bg-gradient-to-r from-fuchsia-500 to-pink-500 py-3 font-bold disabled:opacity-50"
-        >
-          {loading
-            ? "Adding…"
-            : isPlaylist
-            ? "➕ Add whole playlist"
-            : "➕ Add this link"}
-        </button>
-      ) : (
-        <label className="mt-3 flex items-center gap-2 text-sm text-white/60">
-          <input
-            type="checkbox"
-            checked={karaokeOnly}
-            onChange={(e) => toggleKaraoke(e.target.checked)}
-            className="h-4 w-4 accent-fuchsia-500"
-          />
-          Karaoke versions only
-        </label>
-      )}
+      {/* Only the results scroll. */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-1">
+        <ul className="space-y-2">
+          {displayed.map((r) => (
+            <SongRow
+              key={r.videoId}
+              song={r}
+              onAdd={onAdd}
+              onStar={onStar}
+              starred={starred.has(r.videoId)}
+            />
+          ))}
+        </ul>
 
-      {error && <p className="mt-3 text-sm text-amber-400">{error}</p>}
-      {loading && !looksLikeUrl && (
-        <p className="mt-3 text-sm text-white/40">Searching…</p>
-      )}
-
-      <ul className="mt-4 space-y-2">
-        {displayed.map((r) => (
-          <SongRow
-            key={r.videoId}
-            song={r}
-            onAdd={onAdd}
-            onStar={onStar}
-            starred={starred.has(r.videoId)}
-          />
-        ))}
-      </ul>
-
-      {hasMore && !looksLikeUrl && displayed.length > 0 && (
-        <button
-          type="button"
-          onClick={loadMore}
-          disabled={loadingMore}
-          className="mt-3 w-full rounded-xl bg-white/10 py-3 font-semibold active:scale-95 disabled:opacity-50"
-        >
-          {loadingMore ? "Loading…" : "Load more"}
-        </button>
-      )}
+        {hasMore && !looksLikeUrl && displayed.length > 0 && (
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="mt-3 w-full rounded-xl bg-white/10 py-3 font-semibold active:scale-95 disabled:opacity-50"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -458,6 +491,8 @@ export function QueueTab({
   const isPlaying = player?.status === "playing";
   const dur = player?.durationSec ?? 0;
   const cur = player?.currentTimeSec ?? 0;
+  // Skipping cuts off the current singer, so confirm before doing it.
+  const [confirmSkip, setConfirmSkip] = useState(false);
 
   // Local copy so a drag feels instant; we only re-sync from the server when the
   // SET of songs changes (someone added/removed, or a song finished) — not on
@@ -536,7 +571,7 @@ export function QueueTab({
             </button>
             <button
               type="button"
-              onClick={() => onCommand({ cmd: "skip" })}
+              onClick={() => setConfirmSkip(true)}
               className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold active:scale-95"
             >
               ⏭ Skip
@@ -575,6 +610,43 @@ export function QueueTab({
       </Reorder.Group>
       {items.length === 0 && (
         <p className="text-sm text-white/30">Queue is empty.</p>
+      )}
+
+      {confirmSkip && nowPlaying && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setConfirmSkip(false)}
+        >
+          <div
+            className="w-full max-w-xs rounded-2xl border border-white/10 bg-[#1a1a22] p-5 text-center shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-3xl">⏭</div>
+            <h3 className="mt-2 text-lg font-bold">Skip this song?</h3>
+            <p className="mt-1 line-clamp-2 text-sm text-white/50">
+              {nowPlaying.title}
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmSkip(false)}
+                className="flex-1 rounded-xl bg-white/10 py-2.5 font-semibold active:scale-95"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onCommand({ cmd: "skip" });
+                  setConfirmSkip(false);
+                }}
+                className="flex-1 rounded-xl bg-fuchsia-500 py-2.5 font-bold active:scale-95"
+              >
+                Skip
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

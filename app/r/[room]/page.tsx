@@ -58,9 +58,13 @@ export default function RemotePage() {
   const [tab, setTab] = useState<Tab>("search");
   const [showReactions, setShowReactions] = useState(false);
 
-  // Singer name, favorites (★), add-to-queue + "added" toast — shared with host.
-  const { name, saveName, starred, favorite, add, addMany, toast } =
-    useSongLibrary({ addSong, signedIn, sessionName: session?.user?.name });
+  // Favorites (★), add-to-queue + "added" toast — shared with host. The singer
+  // name is applied automatically (Google name when signed in, else "Guest").
+  const { starred, favorite, add, addMany, toast } = useSongLibrary({
+    addSong,
+    signedIn,
+    sessionName: session?.user?.name,
+  });
 
   // Gate the remote behind room-exists + password checks.
   if (joinError === "not_found") return <RoomMissing code={code} />;
@@ -78,11 +82,13 @@ export default function RemotePage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-10 border-b border-white/10 bg-[#0a0a0f]/90 px-4 py-3 backdrop-blur">
-        <div className="flex items-center justify-between">
-          <span className="text-lg font-black tracking-tight">SingAlong</span>
+    <main className="mx-auto flex h-[100dvh] w-full max-w-md flex-col overflow-hidden">
+      {/* Top bar: brand, connection, sign in. The name field lives in the
+          scrollable area below (so it scrolls away and isn't mistaken for the
+          search box); the tabs stay pinned here. */}
+      <header className="flex items-center justify-between gap-3 border-b border-white/10 bg-[#0a0a0f] px-4 py-3">
+        <span className="text-lg font-black tracking-tight">SingAlong</span>
+        <div className="flex items-center gap-3">
           <span className="flex items-center gap-2 text-xs text-white/40">
             <span
               className={`h-2 w-2 rounded-full ${
@@ -91,19 +97,11 @@ export default function RemotePage() {
             />
             Room {code}
           </span>
-        </div>
-        <div className="mt-2 flex gap-2">
-          <input
-            value={name}
-            onChange={(e) => saveName(e.target.value)}
-            placeholder="Your name (shown on the big screen)"
-            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-fuchsia-400"
-          />
           {signedIn ? (
             <button
               type="button"
               onClick={() => signOut()}
-              className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/60 active:scale-95"
+              className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white/60 active:scale-95"
               title={`Signed in as ${session?.user?.name ?? ""}`}
             >
               Sign out
@@ -112,7 +110,7 @@ export default function RemotePage() {
             <button
               type="button"
               onClick={() => signIn("google")}
-              className="shrink-0 rounded-lg bg-white px-3 text-xs font-semibold text-black active:scale-95"
+              className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-black active:scale-95"
             >
               Sign in
             </button>
@@ -121,7 +119,7 @@ export default function RemotePage() {
       </header>
 
       {/* Tabs */}
-      <nav className="flex border-b border-white/10">
+      <nav className="flex border-b border-white/10 bg-[#0a0a0f]">
         {(["search", "favorites", "recent", "queue"] as Tab[]).map((t) => (
           <button
             key={t}
@@ -139,10 +137,12 @@ export default function RemotePage() {
         ))}
       </nav>
 
-      <div className="flex-1 px-4 py-4">
-        {/* Search stays mounted (just hidden) so results persist when you
-            switch to another tab and back. */}
-        <div className={tab === "search" ? "" : "hidden"}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {/* Search has its own fixed bar + scrolling results; it stays mounted
+            (just hidden) so results persist when you switch tabs and back. */}
+        <div
+          className={tab === "search" ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+        >
           <SearchTab
             onAdd={add}
             onAddMany={addMany}
@@ -150,33 +150,35 @@ export default function RemotePage() {
             starred={starred}
           />
         </div>
-        {tab === "favorites" &&
-          (signedIn ? (
-            <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
-          ) : (
-            <SignInPrompt
-              message="Sign in with Google to save and see your favorite songs."
-            />
-          ))}
-        {tab === "recent" && (
-          <RecentTab
-            history={state?.history ?? []}
-            onAdd={add}
-            onStar={favorite}
-            starred={starred}
-          />
-        )}
-        {tab === "queue" && (
-          <QueueTab
-            queue={state?.queue ?? []}
-            nowPlaying={state?.nowPlaying ?? null}
-            player={livePlayer ?? state?.playerState ?? null}
-            onRemove={removeSong}
-            onReorder={reorder}
-            onCommand={sendCommand}
-            onStar={favorite}
-            starred={starred}
-          />
+        {tab !== "search" && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            {tab === "favorites" &&
+              (signedIn ? (
+                <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
+              ) : (
+                <SignInPrompt message="Sign in with Google to save and see your favorite songs." />
+              ))}
+            {tab === "recent" && (
+              <RecentTab
+                history={state?.history ?? []}
+                onAdd={add}
+                onStar={favorite}
+                starred={starred}
+              />
+            )}
+            {tab === "queue" && (
+              <QueueTab
+                queue={state?.queue ?? []}
+                nowPlaying={state?.nowPlaying ?? null}
+                player={livePlayer ?? state?.playerState ?? null}
+                onRemove={removeSong}
+                onReorder={reorder}
+                onCommand={sendCommand}
+                onStar={favorite}
+                starred={starred}
+              />
+            )}
+          </div>
         )}
       </div>
 

@@ -23,6 +23,8 @@ type YTPlayer = {
   getDuration: () => number;
   getPlayerState: () => number;
   setVolume: (volume: number) => void;
+  mute: () => void;
+  unMute: () => void;
   destroy: () => void;
 };
 
@@ -93,8 +95,16 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
     seek: (sec) => playerRef.current?.seekTo(sec, true),
     restart: () => playerRef.current?.seekTo(0, true),
     // 0–100. The player keeps its volume across loadVideoById, so this sticks
-    // for the whole session once set.
-    setVolume: (volume) => playerRef.current?.setVolume(volume),
+    // for the whole session once set. Autoplay makes the browser start the
+    // player MUTED, so explicitly unMute() (or mute() at 0) — setVolume alone
+    // wouldn't clear that mute flag, leaving it silent at volume 100.
+    setVolume: (volume) => {
+      const p = playerRef.current;
+      if (!p) return;
+      if (volume > 0) p.unMute();
+      else p.mute();
+      p.setVolume(volume);
+    },
   }));
 
   // Initialize the player once.

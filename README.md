@@ -20,11 +20,15 @@ instantly **seek to any part** of a song.
 - 👥 **Multiple hosts / co-hosting** — several TV screens can share one room;
   play/pause/seek/skip sync across all of them, and a newly-opened host jumps to
   the song already in progress.
-- 📱 **Phone remote** — search, queue songs with your name, control playback,
-  and **scrub/seek live**.
+- 📱 **Phone remote** — search, queue songs, control playback, and
+  **scrub/seek live**. The search field stays **pinned at the top** while you
+  scroll results, and **Skip** asks for confirmation first so you don't cut
+  someone off by accident. The singer shown on the big screen is your Google
+  name when signed in, otherwise "Guest".
 - 🔎 **Quota-free search** via **yt-dlp** (fallback to the YouTube Data API),
   with a **"Karaoke versions only"** toggle, **Load more** paging, and your
-  favorites pinned to the top. Paste a single link **or a whole playlist**.
+  favorites pinned to the top. Titles clamp to two lines — **tap** a result's
+  title to reveal its full name. Paste a single link **or a whole playlist**.
 - 🔄 **Real-time sync** over Socket.IO (queue, play/pause/skip/seek).
 - ↕️ **Drag-to-reorder** the queue (drag the ⠿ grip).
 - 👤 **Sign in with Google** (Auth.js) for **personal favorites**, sortable by
@@ -75,6 +79,23 @@ Environment (`.env.local`):
 - `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL` — Google
   sign-in. `AUTH_URL` must be your public origin (required behind a proxy/tunnel).
 
+## Testing
+
+Unit tests (Vitest) cover the core logic: room-code/password validation
+(`lib/code.ts`), time formatting (`lib/format.ts`), the in-memory room/queue
+engine (`lib/rooms.ts`), YouTube URL/duration parsing + the Data-API helpers
+(`lib/youtube.ts`), the search orchestrator with cache + fallback (`lib/search.ts`),
+the yt-dlp scraper (`lib/ytsearch.ts`, with `child_process` mocked), and the
+SQLite favorites/plays layer (`lib/db.ts`, against an in-memory DB).
+
+```bash
+npm test           # run once
+npm run test:watch # watch mode
+```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the type-checker
+and the full suite on every push to `main` and on every pull request.
+
 ## Deploy
 
 Two supported paths:
@@ -116,9 +137,3 @@ Two supported paths:
 (git pull → `npm ci` → build → restart). Set repo secrets `DEPLOY_HOST`,
 `DEPLOY_USER`, `DEPLOY_PORT`, `DEPLOY_SSH_KEY`, and a passwordless-sudo rule for
 `systemctl restart singalong`.
-
-## Trade-off vs. pikaraoke
-
-Embedding YouTube directly means no download/disk use and instant seeking, but
-**no pitch/key shifting or vocal removal** (you can't process YouTube's stream).
-Search "<song> karaoke" for instrumental tracks instead.

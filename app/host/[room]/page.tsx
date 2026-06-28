@@ -123,9 +123,13 @@ export default function HostPage() {
     if (joined && password) sessionStorage.setItem(`host-pw-${code}`, password);
   }, [joined, password, code]);
 
-  // Singer name, favorites (★), add-to-queue + "added" toast — shared with remote.
-  const { name, saveName, starred, favorite, add, addMany, toast } =
-    useSongLibrary({ addSong, signedIn, sessionName: session?.user?.name });
+  // Favorites (★), add-to-queue + "added" toast — shared with remote. The singer
+  // name is applied automatically (Google name when signed in, else "Guest").
+  const { starred, favorite, add, addMany, toast } = useSongLibrary({
+    addSong,
+    signedIn,
+    sessionName: session?.user?.name,
+  });
 
   const [tab, setTab] = useState<Tab>("queue");
   const [showReactions, setShowReactions] = useState(false);
@@ -134,6 +138,10 @@ export default function HostPage() {
   const [blockedId, setBlockedId] = useState<string | null>(null);
   // TV volume (0–100), local to this screen. Persisted so a reload keeps it.
   const [volume, setVolume] = useState(100);
+  // Mirror of `volume` for the [] -dep unlock effect (reads the latest value
+  // when the first user gesture fires, without re-subscribing).
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
 
   useEffect(() => {
     setJoinUrl(`${window.location.origin}/r/${code}`);
@@ -169,8 +177,13 @@ export default function HostPage() {
     socket.on("sfx:play", onSfx);
 
     // Unlock the audio context on the first interaction so SFX can play later
-    // without a gesture (browsers start it suspended).
-    const unlock = () => unlockAudio();
+    // without a gesture (browsers start it suspended). Also re-apply the TV
+    // volume here: autoplay starts the video muted, and an un-mute only "takes"
+    // once there's been a user gesture — this first tap/keypress is it.
+    const unlock = () => {
+      unlockAudio();
+      playerRef.current?.setVolume(volumeRef.current);
+    };
     window.addEventListener("pointerdown", unlock, { once: true });
     window.addEventListener("keydown", unlock, { once: true });
 
@@ -439,14 +452,13 @@ export default function HostPage() {
       {/* RIGHT: phone-sized remote panel (full height). Hidden in fullscreen. */}
       {!isFullscreen && (
         <aside className="relative flex w-full flex-1 flex-col overflow-hidden border-t border-white/10 bg-[#0a0a0f] lg:w-[400px] lg:flex-none lg:border-l lg:border-t-0">
-          {/* Header: name + sign in + connection */}
-          <header className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
-            <input
-              value={name}
-              onChange={(e) => saveName(e.target.value)}
-              placeholder="Your name (shown on the big screen)"
-              className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-fuchsia-400"
-            />
+          {/* Header: who's singing + sign in */}
+          <header className="flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
+            <span className="min-w-0 truncate text-sm text-white/60">
+              {signedIn
+                ? `🎤 ${session?.user?.name ?? ""}`
+                : "Singing as Guest — sign in to use your name"}
+            </span>
             {signedIn ? (
               <button
                 type="button"
@@ -521,10 +533,14 @@ export default function HostPage() {
             ))}
           </nav>
 
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto px-4 py-4">
-            {/* Search stays mounted so results persist across tab switches. */}
-            <div className={tab === "search" ? "" : "hidden"}>
+          {/* Tab content. Search has its own fixed bar + scrolling results and
+              stays mounted (hidden) so results persist across tab switches. */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div
+              className={
+                tab === "search" ? "flex min-h-0 flex-1 flex-col" : "hidden"
+              }
+            >
               <SearchTab
                 onAdd={add}
                 onAddMany={addMany}
@@ -532,31 +548,35 @@ export default function HostPage() {
                 starred={starred}
               />
             </div>
-            {tab === "favorites" &&
-              (signedIn ? (
-                <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
-              ) : (
-                <SignInPrompt message="Sign in with Google to save and see your favorite songs." />
-              ))}
-            {tab === "recent" && (
-              <RecentTab
-                history={state?.history ?? []}
-                onAdd={add}
-                onStar={favorite}
-                starred={starred}
-              />
-            )}
-            {tab === "queue" && (
-              <QueueTab
-                queue={queue}
-                nowPlaying={nowPlaying}
-                player={player}
-                onRemove={removeSong}
-                onReorder={reorder}
-                onCommand={sendCommand}
-                onStar={favorite}
-                starred={starred}
-              />
+            {tab !== "search" && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                {tab === "favorites" &&
+                  (signedIn ? (
+                    <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
+                  ) : (
+                    <SignInPrompt message="Sign in with Google to save and see your favorite songs." />
+                  ))}
+                {tab === "recent" && (
+                  <RecentTab
+                    history={state?.history ?? []}
+                    onAdd={add}
+                    onStar={favorite}
+                    starred={starred}
+                  />
+                )}
+                {tab === "queue" && (
+                  <QueueTab
+                    queue={queue}
+                    nowPlaying={nowPlaying}
+                    player={player}
+                    onRemove={removeSong}
+                    onReorder={reorder}
+                    onCommand={sendCommand}
+                    onStar={favorite}
+                    starred={starred}
+                  />
+                )}
+              </div>
             )}
           </div>
 
