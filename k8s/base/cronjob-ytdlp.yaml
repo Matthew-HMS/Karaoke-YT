@@ -20,10 +20,10 @@ spec:
           restartPolicy: Never
           containers:
             - name: kubectl
-              # Official multi-arch kubectl image. (The old bitnami/kubectl tag
-              # vanished when Bitnami pulled its free Docker Hub catalog in 2025,
-              # which is what put this job into ImagePullBackOff.)
-              image: registry.k8s.io/kubectl:v1.28.15
+              # Multi-arch (incl. arm64) kubectl image matching the cluster's
+              # 1.28. (The old bitnami/kubectl tag vanished when Bitnami pulled
+              # its free Docker Hub catalog in 2025 → ImagePullBackOff.)
+              image: rancher/kubectl:v1.28.15
               command:
                 - kubectl
                 - -n
