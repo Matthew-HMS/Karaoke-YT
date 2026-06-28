@@ -31,6 +31,7 @@ import { getSocket } from "@/lib/socket";
 import type { SfxName } from "@/lib/types";
 import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
+import { useWakeLock } from "@/lib/useWakeLock";
 
 // Safari still exposes fullscreen only under webkit-prefixed names.
 type FsDocument = Document & {
@@ -197,6 +198,10 @@ export default function HostPage() {
 
   const nowPlaying = state?.nowPlaying ?? null;
   const queue = state?.queue ?? [];
+
+  // Keep the screen awake while a song is playing — a phone-as-host that dims
+  // and locks would pause the YouTube embed. Idle (empty queue) lets it sleep.
+  useWakeLock(!!nowPlaying);
   const player = livePlayer ?? state?.playerState ?? null;
   const progress = useMemo(() => {
     if (!player || !player.durationSec) return 0;

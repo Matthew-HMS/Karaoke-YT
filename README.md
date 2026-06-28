@@ -12,7 +12,9 @@ instantly **seek to any part** of a song.
   you can browse/queue while watching), playback controls + seek in the Queue
   tab, a join QR, the **room password**, and a 🎉 reactions button. A footer
   **volume slider** sets the TV's level. Responsive (stacks on a phone), with a
-  **fullscreen** toggle for the TV.
+  **fullscreen** toggle for the TV. While a song is playing the host holds a
+  **Screen Wake Lock** so a phone-as-host won't dim/lock and pause the embed
+  (browsers still pause the video if you switch away from the tab).
 - 🔐 **Password-protected rooms** — the host sets a 4-letter password when
   creating; guests need the code *and* the password, and **co-hosts** opening
   the same room must enter it too (they never overwrite it). A code with no
