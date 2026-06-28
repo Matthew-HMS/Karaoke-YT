@@ -19,6 +19,7 @@ type Room = {
   playerState: PlayerState;
   history: QueueItem[]; // played songs (most-recent first), capped, in-memory
   hostSocketId: string | null;
+  lastActivityAt: number; // epoch ms; bumped on activity, used to reap idle rooms
 };
 
 const MAX_HISTORY = 50;
@@ -47,9 +48,40 @@ export function createRoom(code?: string, password = ""): Room {
     playerState: { ...DEFAULT_PLAYER_STATE },
     history: [],
     hostSocketId: null,
+    lastActivityAt: Date.now(),
   };
   rooms.set(room.code, room);
   return room;
+}
+
+// Mark a room as recently active so the idle reaper leaves it alone. Called on
+// join and whenever the room's state changes (see server.ts).
+export function touchRoom(room: Room): void {
+  room.lastActivityAt = Date.now();
+}
+
+export function deleteRoom(code: string): boolean {
+  return rooms.delete(code);
+}
+
+// Remove rooms that are both empty and stale: no connected clients (per the
+// `hasClients` probe, which consults live Socket.IO membership) AND no activity
+// for longer than `maxIdleMs`. Returns the codes that were removed. `now` is
+// injectable for tests.
+export function reapIdleRooms(
+  maxIdleMs: number,
+  hasClients: (code: string) => boolean,
+  now: number = Date.now()
+): string[] {
+  const removed: string[] = [];
+  for (const [code, room] of rooms) {
+    if (hasClients(code)) continue; // someone's still connected — keep it
+    if (now - room.lastActivityAt > maxIdleMs) {
+      rooms.delete(code);
+      removed.push(code);
+    }
+  }
+  return removed;
 }
 
 // Get an existing room, or lazily create one for the given code. Only the host

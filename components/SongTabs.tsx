@@ -298,15 +298,18 @@ export function SearchTab({
               : "➕ Add this link"}
           </button>
         ) : (
-          <label className="mt-3 flex items-center gap-2 text-sm text-white/60">
-            <input
-              type="checkbox"
-              checked={karaokeOnly}
-              onChange={(e) => toggleKaraoke(e.target.checked)}
-              className="h-4 w-4 accent-fuchsia-500"
-            />
-            Karaoke versions only
-          </label>
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <label className="flex items-center gap-2 text-sm text-white/60">
+              <input
+                type="checkbox"
+                checked={karaokeOnly}
+                onChange={(e) => toggleKaraoke(e.target.checked)}
+                className="h-4 w-4 accent-fuchsia-500"
+              />
+              Karaoke versions
+            </label>
+            <span className="text-xs text-white/30">Click to expand full song name</span>
+          </div>
         )}
 
         {error && <p className="mt-3 text-sm text-amber-400">{error}</p>}

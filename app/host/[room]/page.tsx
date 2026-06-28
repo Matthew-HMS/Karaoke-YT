@@ -203,6 +203,32 @@ export default function HostPage() {
     return Math.min(100, (player.currentTimeSec / player.durationSec) * 100);
   }, [player]);
 
+  // Detect a wiped session: room state lives in memory on the server, so a
+  // restart/redeploy clears the queue + now-playing. If we were disconnected
+  // mid-session and then reconnect into an empty room, surface that instead of
+  // silently flipping to the bland "Queue's empty" screen.
+  const [sessionReset, setSessionReset] = useState(false);
+  const hadContentRef = useRef(false);
+  const expectResetRef = useRef(false);
+  useEffect(() => {
+    // Arm the detector only if we lose the connection while something was going.
+    if (!connected && hadContentRef.current) expectResetRef.current = true;
+  }, [connected]);
+  useEffect(() => {
+    if (!state) return;
+    const hasContent = !!(state.nowPlaying || state.queue.length > 0);
+    if (hasContent) {
+      hadContentRef.current = true;
+      expectResetRef.current = false;
+      if (sessionReset) setSessionReset(false);
+    } else if (connected && expectResetRef.current) {
+      // Reconnected and the room came back empty → the server restarted.
+      setSessionReset(true);
+      expectResetRef.current = false;
+      hadContentRef.current = false;
+    }
+  }, [state, connected, sessionReset]);
+
   // Sync a newly-opened host to an in-progress song. We capture the live
   // position/play-state from the FIRST room snapshot we receive (the join
   // snapshot); once our player is actually playing, we seek there and match
@@ -325,6 +351,24 @@ export default function HostPage() {
               onError={(id) => setBlockedId(id)}
               onReady={handlePlayerReady}
             />
+          ) : sessionReset ? (
+            <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+              <div className="text-7xl">🔄</div>
+              <h2 className="mt-6 text-3xl font-bold text-white/80">
+                Session was reset
+              </h2>
+              <p className="mt-2 max-w-md text-white/40">
+                The server restarted, so the queue and current song were cleared.
+                Your favorites are safe — just add songs to start again.
+              </p>
+              <button
+                type="button"
+                onClick={() => setSessionReset(false)}
+                className="mt-6 rounded-xl bg-white/10 px-5 py-2.5 text-sm font-semibold active:scale-95"
+              >
+                Got it
+              </button>
+            </div>
           ) : (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="text-7xl">🎤</div>

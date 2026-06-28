@@ -1,8 +1,11 @@
-name: Build image
+name: CI / CD
 
-# Builds the container image and pushes it to GHCR. The Kubernetes cluster pulls
-# from there (it runs containerd — no Docker needed on the nodes). Tagged by both
-# the long commit SHA (immutable, for rollbacks) and `latest` on main.
+# One pipeline for both CI and CD:
+#   - test  → runs on every pull request AND every push to main
+#   - build → builds the image and pushes to GHCR (main only, needs test)
+#   - deploy→ rolls the new image out to Kubernetes (main only, needs build)
+# So a deploy can only happen after tests pass, and PRs get the same checks
+# without building or deploying anything.
 
 on:
   push:
@@ -10,15 +13,33 @@ on:
     paths-ignore:
       - "**.md"
       - "deploy/**"
+  pull_request:
   workflow_dispatch:
 
-# Never let two image-build/deploys race the rollout; let an in-flight one finish.
-concurrency:
-  group: k8s-deploy
-  cancel-in-progress: false
-
 jobs:
+  # CI gate — type-check + unit tests. Runs for PRs and for main pushes.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: npm test
+      # Informational only — the app has some pre-existing react-hooks findings.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+
   build:
+    # Only build/push on main (or a manual run); never for pull requests.
+    if: github.event_name != 'pull_request'
+    needs: test
     # Native arm64 runner (free for public repos) — no QEMU emulation, so the
     # better-sqlite3 native compile + `next build` run at full speed (~minutes
     # instead of ~20). Matches the cluster's arm64 nodes.
@@ -67,6 +88,11 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Never let two deploys race the rollout; let an in-flight one finish. Scoped
+    # to this job so PR test runs aren't serialized behind a deploy.
+    concurrency:
+      group: k8s-deploy
+      cancel-in-progress: false
     steps:
       - name: Roll out to Kubernetes
         uses: appleboy/ssh-action@v1

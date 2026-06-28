@@ -17,10 +17,12 @@ import {
   advanceQueue,
   createRoom,
   getRoom,
+  reapIdleRooms,
   removeFromQueue,
   reorderQueue,
   setPlayerState,
   toRoomState,
+  touchRoom,
 } from "./lib/rooms";
 import { recordPlay } from "./lib/db";
 import type { QueueItem } from "./lib/types";
@@ -51,9 +53,13 @@ app.prepare().then(() => {
   );
 
   // Broadcast the full room state to everyone in the room (hosts + remotes).
+  // Any state change counts as activity, so refresh the idle timer too.
   const broadcastState = (code: string) => {
     const room = getRoom(code);
-    if (room) io.to(code).emit("room:state", toRoomState(room));
+    if (room) {
+      touchRoom(room);
+      io.to(code).emit("room:state", toRoomState(room));
+    }
   };
 
   // When a different song becomes now-playing, count a play for the signed-in
@@ -100,6 +106,7 @@ app.prepare().then(() => {
           return;
         }
       }
+      touchRoom(room);
       joinedCode = code;
       socket.join(code);
       const state = toRoomState(room);
@@ -178,7 +185,12 @@ app.prepare().then(() => {
     socket.on("disconnect", () => {
       if (joinedCode) {
         const room = getRoom(joinedCode);
-        if (room && room.hostSocketId === socket.id) room.hostSocketId = null;
+        if (room) {
+          if (room.hostSocketId === socket.id) room.hostSocketId = null;
+          // Start the idle clock from when a client leaves, so the 3-day TTL is
+          // measured from the room actually going quiet.
+          touchRoom(room);
+        }
       }
     });
   });
@@ -187,12 +199,28 @@ app.prepare().then(() => {
     console.log(`> SingAlong ready on http://${hostname}:${port}`);
   });
 
+  // Reap abandoned rooms so the in-memory store doesn't grow without bound.
+  // Once a day, drop any room that has no connected clients and hasn't seen
+  // activity in over 3 days. (Rooms in active use are never touched.)
+  const ROOM_TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+  const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
+  const hasClients = (code: string) =>
+    (io.sockets.adapter.rooms.get(code)?.size ?? 0) > 0;
+  const sweepTimer = setInterval(() => {
+    const removed = reapIdleRooms(ROOM_TTL_MS, hasClients);
+    if (removed.length) {
+      console.log(`> reaped ${removed.length} idle room(s): ${removed.join(", ")}`);
+    }
+  }, SWEEP_INTERVAL_MS);
+  sweepTimer.unref(); // don't keep the process alive just for the sweep
+
   // Kubernetes sends SIGTERM before killing the pod (deploys, scale-down,
   // node drain). Close Socket.IO (disconnecting clients cleanly) and the HTTP
   // server so in-flight requests finish, then exit. A timeout forces exit if
   // something hangs, so a wedged shutdown can't block the rollout.
   const shutdown = (signal: string) => {
     console.log(`> ${signal} received — shutting down`);
+    clearInterval(sweepTimer);
     io.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 10_000).unref();
   };

@@ -3,13 +3,16 @@ import {
   addToQueue,
   advanceQueue,
   createRoom,
+  deleteRoom,
   generateRoomCode,
   getOrCreateRoom,
   getRoom,
+  reapIdleRooms,
   removeFromQueue,
   reorderQueue,
   setPlayerState,
   toRoomState,
+  touchRoom,
 } from "@/lib/rooms";
 
 // The rooms store is a module-level Map, so each test uses a unique code to
@@ -132,6 +135,57 @@ describe("advanceQueue", () => {
     }
     expect(room.history).toHaveLength(50);
     expect(room.history[0].title).toBe("S59"); // newest at the front
+  });
+});
+
+describe("idle-room reaping", () => {
+  it("deleteRoom removes a room", () => {
+    const c = code();
+    createRoom(c);
+    expect(deleteRoom(c)).toBe(true);
+    expect(getRoom(c)).toBeUndefined();
+    expect(deleteRoom(c)).toBe(false); // already gone
+  });
+
+  it("touchRoom refreshes lastActivityAt", () => {
+    const room = createRoom(code());
+    room.lastActivityAt = 0;
+    touchRoom(room);
+    expect(room.lastActivityAt).toBeGreaterThan(0);
+  });
+
+  it("reaps rooms that are empty and idle past the TTL", () => {
+    const c = code();
+    const room = createRoom(c);
+    room.lastActivityAt = 1000;
+    const TTL = 3 * 24 * 60 * 60 * 1000; // 3 days
+    const now = 1000 + TTL + 1; // just past the TTL
+    const removed = reapIdleRooms(TTL, () => false, now);
+    expect(removed).toContain(c);
+    expect(getRoom(c)).toBeUndefined();
+  });
+
+  it("keeps rooms that still have connected clients, even if idle", () => {
+    const c = code();
+    const room = createRoom(c);
+    room.lastActivityAt = 1000;
+    const TTL = 3 * 24 * 60 * 60 * 1000;
+    const now = 1000 + TTL + 1;
+    // hasClients returns true for this code → never reaped.
+    const removed = reapIdleRooms(TTL, (x) => x === c, now);
+    expect(removed).not.toContain(c);
+    expect(getRoom(c)).toBeDefined();
+  });
+
+  it("keeps empty rooms that are still within the TTL", () => {
+    const c = code();
+    const room = createRoom(c);
+    room.lastActivityAt = 1000;
+    const TTL = 3 * 24 * 60 * 60 * 1000;
+    const now = 1000 + TTL - 1; // not quite expired
+    const removed = reapIdleRooms(TTL, () => false, now);
+    expect(removed).not.toContain(c);
+    expect(getRoom(c)).toBeDefined();
   });
 });
 

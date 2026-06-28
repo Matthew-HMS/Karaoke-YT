@@ -93,8 +93,9 @@ npm test           # run once
 npm run test:watch # watch mode
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the type-checker
-and the full suite on every push to `main` and on every pull request.
+CI/CD ([`.github/workflows/build-image.yml`](.github/workflows/build-image.yml))
+runs the type-checker and the full suite on every pull request and every push to
+`main`; the image is built and deployed **only after those tests pass**.
 
 ## Deploy
 
