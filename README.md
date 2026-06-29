@@ -31,6 +31,18 @@ instantly **seek to any part** of a song.
   with a **"Karaoke versions only"** toggle, **Load more** paging, and your
   favorites pinned to the top. Titles clamp to two lines — **tap** a result's
   title to reveal its full name. Paste a single link **or a whole playlist**.
+- 🧭 **Recommendations** — the Search tab (the **default tab** on entering a room)
+  isn't blank before you type: signed-out users see **"Recommended top hits"** — a
+  blend of **~70% familiar curated classics + ~30% YouTube's live Most Popular
+  chart**, kept **≥70% Chinese**, so it's not all brand-new songs; randomly
+  ordered so the feed varies, with a **Load more** button. (Without an API key it
+  uses the curated pool of ~260 famous songs alone.) Signed-in users instead get
+  a personalized **"For you"** feed built from their play history + favorites
+  (seeds expanded via YouTube's Mix radio, ranked by cross-seed agreement, with
+  songs you already know filtered out). The Player tab's **Related** sub-tab shows
+  songs related to whatever's currently playing. Related/For-you are quota-free
+  (yt-dlp); hour-long compilations and live-radio streams are filtered out (real
+  songs, ≤10 min) so every pick is a single singable song.
 - 🎶 **Lyrics** — **swipe** the now-playing card left to flip from the song +
   play controls to the **lyrics** (header swaps "Now playing" ↔ "Lyrics"; swipe
   right or tap the dots to go back). Time-synced lyrics **highlight the current
@@ -39,7 +51,11 @@ instantly **seek to any part** of a song.
   from the studio track, and that offset is **saved per video** so it sticks on
   later plays. Sourced from **LRCLIB** (free, no key) with an optional
   **Musixmatch** (RapidAPI) fallback; results — including misses — are cached in
-  SQLite to stay within free quotas.
+  SQLite to stay within free quotas. Signed-in users get a **⚐ Report** button
+  (with a confirm popup) for wrong lyrics: the server remembers that match as
+  rejected and re-queries to find a **different match** next time. The **host
+  screen** shows a **↩ Restore** button (only for songs whose lyrics were
+  reported) to undo a mistaken report.
 - 🔄 **Real-time sync** over Socket.IO (queue, play/pause/skip/seek).
 - ↕️ **Drag-to-reorder** the queue (drag the ⠿ grip).
 - 👤 **Sign in with Google** (Auth.js) for **personal favorites**, sortable by
@@ -60,6 +76,9 @@ instantly **seek to any part** of a song.
 - **Search:** `lib/ytsearch.ts` shells out to **yt-dlp** (no API quota);
   `lib/search.ts` falls back to the **YouTube Data API** if yt-dlp fails, and
   caches results.
+- **Recommendations:** `lib/recommend.ts` orchestrates trending / related /
+  personalized feeds (yt-dlp Mix radio + charts search, in-process cached),
+  served by `/api/trending`, `/api/related`, and `/api/recommendations`.
 - **Auth:** **Auth.js** with Google (`auth.ts`); favorites are scoped to the
   signed-in user.
 - **SQLite** (`lib/db.ts`) persists per-user favorites (single file, no external
@@ -94,6 +113,13 @@ Environment (`.env.local`):
   nothing; returns synced lyrics too). Lyrics work without it via LRCLIB alone.
   Override the host with `MUSIXMATCH_RAPIDAPI_HOST` if needed (defaults to
   `musixmatch-lyrics-songs.p.rapidapi.com`).
+- Trending (signed-out "Top hits") uses YouTube's **Most Popular** music chart
+  via the Data API when `YOUTUBE_API_KEY` is set — quota-cheap (~1 unit/region,
+  refreshed hourly). `TRENDING_REGION` (*optional*, default `TW,US,JP`) is a
+  comma-separated list of region codes blended together. Without a key (or if the
+  chart fails) it falls back to randomly sampling a built-in pool of ~260 famous
+  songs. To pin a source instead: `TRENDING_PLAYLIST_ID` — a YouTube playlist id
+  (wins if set); or `TRENDING_QUERY` — a single search query. Both *optional*.
 
 ## Testing
 

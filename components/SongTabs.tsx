@@ -121,11 +121,13 @@ export function SearchTab({
   onAddMany,
   onStar,
   starred,
+  signedIn,
 }: {
   onAdd: (r: SearchResult) => void;
   onAddMany: (rs: SearchResult[]) => void;
   onStar: (r: SearchResult) => void;
   starred: Set<string>;
+  signedIn: boolean;
 }) {
   const [q, setQ] = useState("");
   const [karaokeOnly, setKaraokeOnly] = useState(false);
@@ -137,6 +139,54 @@ export function SearchTab({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // "Discover" feed shown before any search: personalized recommendations when
+  // signed in ("For you"), otherwise the anonymous top-hits chart.
+  const [discover, setDiscover] = useState<SearchResult[]>([]);
+  const [discoverLoading, setDiscoverLoading] = useState(true);
+  const [discoverMoreLoading, setDiscoverMoreLoading] = useState(false);
+  // Hidden once a "Load more" brings back nothing new (the pool is exhausted).
+  const [discoverDone, setDiscoverDone] = useState(false);
+  const discoverHeading = signedIn ? "For you" : "Recommended top hits";
+
+  useEffect(() => {
+    let active = true;
+    setDiscoverLoading(true);
+    setDiscoverDone(false);
+    // Recommendations require auth; fall back to trending if signed out or the
+    // session isn't ready yet (401).
+    const url = signedIn ? "/api/recommendations" : "/api/trending";
+    fetch(url)
+      .then((r) => (r.ok ? r.json() : { results: [] }))
+      .then((d) => active && setDiscover(d.results ?? []))
+      .catch(() => active && setDiscover([]))
+      .finally(() => active && setDiscoverLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [signedIn]);
+
+  // "Load more" for the discover feed: pull more top hits and append only songs
+  // we don't already show. Trending re-shuffles its pool per call, so each tap
+  // surfaces fresh picks; when nothing new comes back, hide the button.
+  const loadMoreDiscover = async () => {
+    setDiscoverMoreLoading(true);
+    try {
+      const res = await fetch("/api/trending");
+      const data = res.ok ? await res.json() : { results: [] };
+      const incoming = (data.results ?? []) as SearchResult[];
+      setDiscover((prev) => {
+        const have = new Set(prev.map((r) => r.videoId));
+        const added = incoming.filter((r) => !have.has(r.videoId));
+        if (added.length === 0) setDiscoverDone(true);
+        return [...prev, ...added];
+      });
+    } catch {
+      setDiscoverDone(true);
+    } finally {
+      setDiscoverMoreLoading(false);
+    }
+  };
 
   // After a fresh search, jump back to the top of the results so you start at
   // the first match instead of wherever you'd scrolled to.
@@ -258,6 +308,10 @@ export function SearchTab({
     (a, b) => Number(starred.has(b.videoId)) - Number(starred.has(a.videoId))
   );
 
+  // Before any search (and when not pasting a link) we show the discover feed
+  // instead of an empty list.
+  const browsing = !lastQuery && !looksLikeUrl;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Fixed controls — never scroll, so the search field is always visible. */}
@@ -321,17 +375,57 @@ export function SearchTab({
 
       {/* Only the results scroll. */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-1">
-        <ul className="space-y-2">
-          {displayed.map((r) => (
-            <SongRow
-              key={r.videoId}
-              song={r}
-              onAdd={onAdd}
-              onStar={onStar}
-              starred={starred.has(r.videoId)}
-            />
-          ))}
-        </ul>
+        {browsing ? (
+          // Discover feed: top hits (signed out) or personalized picks.
+          <>
+            <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-fuchsia-300">
+              {discoverHeading}
+            </h2>
+            {discoverLoading ? (
+              <p className="text-sm text-white/40">Loading…</p>
+            ) : discover.length === 0 ? (
+              <p className="text-sm text-white/30">
+                Search for a song above to get started.
+              </p>
+            ) : (
+              <>
+                <ul className="space-y-2">
+                  {discover.map((r) => (
+                    <SongRow
+                      key={r.videoId}
+                      song={r}
+                      onAdd={onAdd}
+                      onStar={onStar}
+                      starred={starred.has(r.videoId)}
+                    />
+                  ))}
+                </ul>
+                {!discoverDone && (
+                  <button
+                    type="button"
+                    onClick={loadMoreDiscover}
+                    disabled={discoverMoreLoading}
+                    className="mt-3 w-full rounded-xl bg-white/10 py-3 font-semibold active:scale-95 disabled:opacity-50"
+                  >
+                    {discoverMoreLoading ? "Loading…" : "Load more"}
+                  </button>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <ul className="space-y-2">
+            {displayed.map((r) => (
+              <SongRow
+                key={r.videoId}
+                song={r}
+                onAdd={onAdd}
+                onStar={onStar}
+                starred={starred.has(r.videoId)}
+              />
+            ))}
+          </ul>
+        )}
 
         {hasMore && !looksLikeUrl && displayed.length > 0 && (
           <button
@@ -473,6 +567,62 @@ export function RecentTab({
   );
 }
 
+// Songs related to the currently-playing one (YouTube's Mix radio, fetched from
+// /api/related). Re-fetches whenever the playing video changes.
+function RelatedTab({
+  nowPlaying,
+  onAdd,
+  onStar,
+  starred,
+}: {
+  nowPlaying: QueueItem;
+  onAdd: (r: SearchResult) => void;
+  onStar: (r: SearchResult) => void;
+  starred: Set<string>;
+}) {
+  const [items, setItems] = useState<SearchResult[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    const params = new URLSearchParams({
+      videoId: nowPlaying.videoId,
+      title: nowPlaying.title,
+    });
+    fetch(`/api/related?${params}`)
+      .then((r) => (r.ok ? r.json() : { results: [] }))
+      .then((d) => active && setItems(d.results ?? []))
+      .catch(() => active && setItems([]))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [nowPlaying.videoId, nowPlaying.title]);
+
+  if (loading) return <p className="text-sm text-white/40">Finding related songs…</p>;
+  if (items.length === 0)
+    return (
+      <p className="text-sm text-white/30">
+        Couldn’t find related songs for this one.
+      </p>
+    );
+
+  return (
+    <ul className="space-y-2">
+      {items.map((r) => (
+        <SongRow
+          key={r.videoId}
+          song={r}
+          onAdd={onAdd}
+          onStar={onStar}
+          starred={starred.has(r.videoId)}
+        />
+      ))}
+    </ul>
+  );
+}
+
 // The now-playing card: song info + seek bar + transport controls. (Lyrics live
 // in the tabbed area below the card — see PlayerTab.)
 function NowPlayingCard({
@@ -573,8 +723,11 @@ export function PlayerTab({
   onRemove,
   onReorder,
   onCommand,
+  onAdd,
   onStar,
   starred,
+  signedIn,
+  isHost = false,
 }: {
   queue: QueueItem[];
   nowPlaying: QueueItem | null;
@@ -582,8 +735,11 @@ export function PlayerTab({
   onRemove: (id: string) => void;
   onReorder: (order: string[]) => void;
   onCommand: (cmd: PlayerCommand) => void;
+  onAdd: (r: SearchResult) => void;
   onStar: (r: SearchResult) => void;
   starred: Set<string>;
+  signedIn: boolean;
+  isHost?: boolean;
 }) {
   // Skipping cuts off the current singer, so confirm before doing it.
   const [confirmSkip, setConfirmSkip] = useState(false);
@@ -690,6 +846,8 @@ export function PlayerTab({
                 title={nowPlaying.title}
                 durationSec={player?.durationSec || nowPlaying.durationSec || 0}
                 currentTimeSec={player?.currentTimeSec ?? 0}
+                signedIn={signedIn}
+                isHost={isHost}
               />
             </div>
           ) : (
@@ -698,11 +856,19 @@ export function PlayerTab({
             </p>
           ))}
 
-        {sub === "related" && (
-          <div className="rounded-2xl bg-white/5 p-6 text-center text-sm text-white/30">
-            Related songs — coming soon.
-          </div>
-        )}
+        {sub === "related" &&
+          (nowPlaying ? (
+            <RelatedTab
+              nowPlaying={nowPlaying}
+              onAdd={onAdd}
+              onStar={onStar}
+              starred={starred}
+            />
+          ) : (
+            <p className="text-sm text-white/30">
+              Nothing playing yet — related songs show for the current song.
+            </p>
+          ))}
       </div>
 
       {confirmSkip && nowPlaying && (

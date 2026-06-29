@@ -132,7 +132,7 @@ export default function HostPage() {
     sessionName: session?.user?.name,
   });
 
-  const [tab, setTab] = useState<Tab>("queue");
+  const [tab, setTab] = useState<Tab>("search");
   const [showReactions, setShowReactions] = useState(false);
   const playerRef = useRef<PlayerHandle>(null);
   const [joinUrl, setJoinUrl] = useState("");
@@ -594,6 +594,7 @@ export default function HostPage() {
                 onAddMany={addMany}
                 onStar={favorite}
                 starred={starred}
+                signedIn={signedIn}
               />
             </div>
             {tab !== "search" && (
@@ -620,8 +621,11 @@ export default function HostPage() {
                     onRemove={removeSong}
                     onReorder={reorder}
                     onCommand={sendCommand}
+                    onAdd={add}
                     onStar={favorite}
                     starred={starred}
+                    signedIn={signedIn}
+                    isHost
                   />
                 )}
               </div>

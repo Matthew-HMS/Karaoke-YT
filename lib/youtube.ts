@@ -96,6 +96,39 @@ export async function getVideoMeta(videoId: string): Promise<SearchResult | null
   return map.get(videoId) ?? null;
 }
 
+// YouTube's "Most Popular" music chart for a region (videoCategoryId 10 = Music).
+// This is genuinely trending-by-popularity, and it's quota-cheap: videos.list
+// with chart=mostPopular costs 1 unit per call (vs. 100 for a search). Returns
+// videos in chart order, with durations included.
+export async function getMostPopularMusic(
+  regionCode: string,
+  maxResults = 20
+): Promise<SearchResult[]> {
+  const url = new URL(`${API_BASE}/videos`);
+  url.searchParams.set("part", "snippet,contentDetails");
+  url.searchParams.set("chart", "mostPopular");
+  url.searchParams.set("videoCategoryId", "10"); // Music
+  url.searchParams.set("regionCode", regionCode);
+  url.searchParams.set("maxResults", String(Math.min(Math.max(maxResults, 1), 50)));
+  url.searchParams.set("key", apiKey());
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`YouTube mostPopular failed: ${res.status}`);
+  const data = await res.json();
+  return (data.items ?? []).map(
+    (item: {
+      id: string;
+      snippet?: { title?: string; thumbnails?: Record<string, { url: string }> };
+      contentDetails?: { duration?: string };
+    }) => ({
+      videoId: item.id,
+      title: item.snippet?.title ?? "Untitled",
+      thumbnail: bestThumb(item.snippet?.thumbnails),
+      durationSec: parseDuration(item.contentDetails?.duration ?? ""),
+    })
+  );
+}
+
 export async function searchYouTube(
   query: string,
   opts: { karaokeOnly: boolean; limit?: number }

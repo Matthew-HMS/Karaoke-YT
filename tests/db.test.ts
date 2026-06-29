@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addFavorite,
   getCachedLyrics,
+  getKnownVideoIds,
   listFavorites,
+  listTopPlayed,
+  clearRejectedLyrics,
   putCachedLyrics,
   recordPlay,
+  rejectLyrics,
   removeFavorite,
   setLyricsOffset,
   type SongMeta,
@@ -89,6 +93,35 @@ describe("play counts + plays sort", () => {
   });
 });
 
+describe("recommendation seeds", () => {
+  it("listTopPlayed returns ids busiest-first, capped to the limit", () => {
+    const u = user();
+    recordPlay(u, "a");
+    recordPlay(u, "b");
+    recordPlay(u, "b");
+    recordPlay(u, "c");
+    recordPlay(u, "c");
+    recordPlay(u, "c");
+    expect(listTopPlayed(u, 2)).toEqual(["c", "b"]);
+  });
+
+  it("getKnownVideoIds unions favorites and plays for the user", () => {
+    const u = user();
+    addFavorite(u, song("fav"));
+    recordPlay(u, "played");
+    recordPlay(u, "fav"); // overlap shouldn't duplicate
+    const known = getKnownVideoIds(u);
+    expect(known).toEqual(new Set(["fav", "played"]));
+  });
+
+  it("scopes known ids per user", () => {
+    const u1 = user();
+    const u2 = user();
+    addFavorite(u1, song("x"));
+    expect(getKnownVideoIds(u2).size).toBe(0);
+  });
+});
+
 describe("lyrics cache + sync offset", () => {
   const result: LyricsResult = {
     synced: true,
@@ -128,5 +161,28 @@ describe("lyrics cache + sync offset", () => {
     const cached = getCachedLyrics("vid-early");
     expect(cached?.offset).toBe(-1.5);
     expect(cached?.result).toBeNull();
+  });
+
+  it("rejectLyrics records the signature, clears data, and forces a re-fetch", () => {
+    putCachedLyrics("vid-bad", result);
+    expect(getCachedLyrics("vid-bad")?.rejected).toEqual([]);
+    rejectLyrics("vid-bad", "sig1");
+    const cached = getCachedLyrics("vid-bad");
+    expect(cached?.rejected).toContain("sig1");
+    expect(cached?.result).toBeNull(); // wrong lyrics cleared
+    expect(cached?.fetchedAt).toBe(0); // miss expired → next lookup re-queries
+  });
+
+  it("rejectLyrics accumulates signatures across reports (de-duped)", () => {
+    rejectLyrics("vid-acc", "a");
+    rejectLyrics("vid-acc", "b");
+    rejectLyrics("vid-acc", "a"); // duplicate ignored
+    expect(getCachedLyrics("vid-acc")?.rejected).toEqual(["a", "b"]);
+  });
+
+  it("clearRejectedLyrics recovers a mistaken report", () => {
+    rejectLyrics("vid-oops", "x");
+    clearRejectedLyrics("vid-oops");
+    expect(getCachedLyrics("vid-oops")?.rejected).toEqual([]);
   });
 });

@@ -89,3 +89,15 @@ export async function getPlaylistViaYtDlp(
   const url = `https://www.youtube.com/playlist?list=${playlistId}`;
   return runFlat(url, MAX_PLAYLIST, PLAYLIST_TIMEOUT_MS);
 }
+
+// Fetch a video's auto-generated "Mix" (the radio playlist YouTube builds from a
+// seed video, id `RD<videoId>`). This is YouTube's own per-song related-songs
+// feed — quota-free via the watch URL. The seed video itself is filtered out.
+export async function getRelatedViaYtDlp(
+  videoId: string,
+  limit = 25
+): Promise<SearchResult[]> {
+  const url = `https://www.youtube.com/watch?v=${videoId}&list=RD${videoId}`;
+  const results = await runFlat(url, limit, PLAYLIST_TIMEOUT_MS);
+  return results.filter((r) => r.videoId !== videoId);
+}

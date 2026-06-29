@@ -77,6 +77,32 @@ export function recordPlay(userId: string, videoId: string): void {
   recordPlayStmt.run({ userId, videoId, at: Date.now() });
 }
 
+// The user's most-played videoIds, busiest first (ties broken by most recent).
+// Used as seed songs for personalized recommendations — only ids are needed
+// since the recommender expands each seed into a fresh "related" feed.
+const listTopPlayedStmt = db.prepare(
+  `SELECT videoId FROM play WHERE userId = ?
+   ORDER BY count DESC, lastPlayedAt DESC LIMIT ?`
+);
+
+export function listTopPlayed(userId: string, limit: number): string[] {
+  const rows = listTopPlayedStmt.all(userId, limit) as { videoId: string }[];
+  return rows.map((r) => r.videoId);
+}
+
+// Every videoId this user has already favorited or played. The recommender
+// subtracts this set so it never suggests a song the user clearly already knows.
+const knownVideoIdsStmt = db.prepare(
+  `SELECT videoId FROM favorite WHERE userId = @userId
+   UNION
+   SELECT videoId FROM play WHERE userId = @userId`
+);
+
+export function getKnownVideoIds(userId: string): Set<string> {
+  const rows = knownVideoIdsStmt.all({ userId }) as { videoId: string }[];
+  return new Set(rows.map((r) => r.videoId));
+}
+
 export type FavoriteSort = "added" | "plays";
 
 // Favorites, optionally sorted by the user's own play count. A LEFT JOIN keeps
@@ -124,40 +150,51 @@ export function removeFavorite(userId: string, videoId: string): void {
 // burning the limited Musixmatch quota on songs that have no lyrics). `offset`
 // is a manual sync nudge (seconds) the user dialed in for this video, so a
 // music video's intro/outro drift stays corrected across future plays.
+// `rejected` is a JSON array of signatures for lyric matches a user reported as
+// wrong; getLyrics excludes them so a re-fetch finds a DIFFERENT match.
 db.exec(`
   CREATE TABLE IF NOT EXISTS lyrics (
     videoId   TEXT PRIMARY KEY,
     data      TEXT,
     fetchedAt INTEGER NOT NULL,
-    offset    REAL NOT NULL DEFAULT 0
+    offset    REAL NOT NULL DEFAULT 0,
+    rejected  TEXT
   );
 `);
 
-// Migration for databases created before the sync-offset column existed.
+// Migrations for databases created before later columns existed.
 const lyricsCols = db.prepare(`PRAGMA table_info(lyrics)`).all() as {
   name: string;
 }[];
 if (!lyricsCols.some((c) => c.name === "offset")) {
   db.exec(`ALTER TABLE lyrics ADD COLUMN offset REAL NOT NULL DEFAULT 0`);
 }
+if (!lyricsCols.some((c) => c.name === "rejected")) {
+  db.exec(`ALTER TABLE lyrics ADD COLUMN rejected TEXT`);
+}
 
 const getLyricsStmt = db.prepare(
-  `SELECT data, fetchedAt, offset FROM lyrics WHERE videoId = ?`
+  `SELECT data, fetchedAt, offset, rejected FROM lyrics WHERE videoId = ?`
 );
 
-// Returns { result, fetchedAt, offset } when we've looked before (result is null
-// for a cached miss), or null when this videoId has never been fetched.
-export function getCachedLyrics(
-  videoId: string
-): { result: LyricsResult | null; fetchedAt: number; offset: number } | null {
+// Returns { result, fetchedAt, offset, rejected } when we've looked before
+// (result is null for a cached miss), or null when this videoId has never been
+// fetched. `rejected` is the list of reported-wrong match signatures.
+export function getCachedLyrics(videoId: string): {
+  result: LyricsResult | null;
+  fetchedAt: number;
+  offset: number;
+  rejected: string[];
+} | null {
   const row = getLyricsStmt.get(videoId) as
-    | { data: string | null; fetchedAt: number; offset: number }
+    | { data: string | null; fetchedAt: number; offset: number; rejected: string | null }
     | undefined;
   if (!row) return null;
   return {
     result: row.data ? (JSON.parse(row.data) as LyricsResult) : null,
     fetchedAt: row.fetchedAt,
     offset: row.offset,
+    rejected: row.rejected ? (JSON.parse(row.rejected) as string[]) : [],
   };
 }
 
@@ -190,6 +227,32 @@ const setLyricsOffsetStmt = db.prepare(
 
 export function setLyricsOffset(videoId: string, offset: number): void {
   setLyricsOffsetStmt.run({ videoId, offset, fetchedAt: Date.now() });
+}
+
+// Report the cached lyrics as wrong: remember this match's `signature` so it's
+// skipped, clear the stored data, and reset fetchedAt to 0 so the next lookup
+// re-queries the providers and finds a DIFFERENT match.
+const rejectLyricsStmt = db.prepare(
+  `INSERT INTO lyrics (videoId, data, fetchedAt, rejected)
+   VALUES (@videoId, NULL, 0, @rejected)
+   ON CONFLICT(videoId) DO UPDATE SET data = NULL, fetchedAt = 0, rejected = @rejected`
+);
+
+export function rejectLyrics(videoId: string, signature: string): void {
+  const current = getCachedLyrics(videoId)?.rejected ?? [];
+  if (signature && !current.includes(signature)) current.push(signature);
+  rejectLyricsStmt.run({ videoId, rejected: JSON.stringify(current) });
+}
+
+// Recovery for a mistaken report: forget all reported-wrong signatures for a
+// video and reset fetchedAt so the next lookup re-queries (and can return a
+// previously-rejected match again).
+const clearRejectedLyricsStmt = db.prepare(
+  `UPDATE lyrics SET rejected = NULL, fetchedAt = 0 WHERE videoId = ?`
+);
+
+export function clearRejectedLyrics(videoId: string): void {
+  clearRejectedLyricsStmt.run(videoId);
 }
 
 export default db;

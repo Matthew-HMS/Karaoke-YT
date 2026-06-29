@@ -20,6 +20,10 @@ type Props = {
   title: string;
   durationSec: number;
   currentTimeSec: number;
+  // Only signed-in users may report wrong lyrics (the server enforces it too).
+  signedIn: boolean;
+  // The host screen gets a "Restore" button to undo a wrong-lyrics report.
+  isHost: boolean;
 };
 
 type Loaded = {
@@ -28,9 +32,18 @@ type Loaded = {
   lines?: LyricLine[];
   source?: string;
   offset?: number;
+  // True when a match was reported wrong for this song (so the host can restore).
+  hasRejected?: boolean;
 };
 
-export function LyricsPanel({ videoId, title, durationSec, currentTimeSec }: Props) {
+export function LyricsPanel({
+  videoId,
+  title,
+  durationSec,
+  currentTimeSec,
+  signedIn,
+  isHost,
+}: Props) {
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState(false);
   // Manual sync nudge (seconds). Music videos often have an intro/outro the
@@ -38,16 +51,21 @@ export function LyricsPanel({ videoId, title, durationSec, currentTimeSec }: Pro
   // Positive = lyrics wait longer (delay); negative = lyrics run earlier. The
   // value is loaded from / saved to the server so it sticks across plays.
   const [offset, setOffset] = useState(0);
+  // Reporting wrong lyrics: the confirm popup. After a report we bump reloadKey
+  // to re-fetch — the server has rejected the old match, so a different one loads.
+  const [confirmReport, setConfirmReport] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLParagraphElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // (Re)fetch whenever the song changes.
+  // (Re)fetch whenever the song changes — or after a report (reloadKey).
   useEffect(() => {
     let active = true;
     setData(null);
     setError(false);
     setOffset(0);
+    setConfirmReport(false);
     const params = new URLSearchParams({
       videoId,
       title,
@@ -66,7 +84,7 @@ export function LyricsPanel({ videoId, title, durationSec, currentTimeSec }: Pro
       active = false;
       controller.abort();
     };
-  }, [videoId, title, durationSec]);
+  }, [videoId, title, durationSec, reloadKey]);
 
   // Nudge the sync offset and persist it (debounced) so it sticks next time.
   const nudge = (delta: number) => {
@@ -82,6 +100,35 @@ export function LyricsPanel({ videoId, title, durationSec, currentTimeSec }: Pro
       }, 600);
       return next;
     });
+  };
+
+  // Confirm-report → tell the server the lyrics are wrong (it rejects this match
+  // and clears the cache), then re-fetch so a different match loads.
+  const submitReport = async () => {
+    setConfirmReport(false);
+    try {
+      await fetch(`/api/lyrics?videoId=${encodeURIComponent(videoId)}`, {
+        method: "DELETE",
+      });
+    } catch {
+      // ignore — re-fetch anyway
+    }
+    setReloadKey((k) => k + 1);
+  };
+
+  // Host-only: undo a wrong-lyrics report for this song, then re-fetch so the
+  // restored match can load again.
+  const restoreLyrics = async () => {
+    try {
+      await fetch("/api/lyrics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId, restore: true }),
+      });
+    } catch {
+      // ignore — re-fetch anyway
+    }
+    setReloadKey((k) => k + 1);
   };
 
   const lines = data?.lines ?? [];
@@ -138,31 +185,55 @@ export function LyricsPanel({ videoId, title, durationSec, currentTimeSec }: Pro
             <span className="ml-2 normal-case text-white/30">(not synced)</span>
           )}
         </div>
-        {/* Sync nudge — only useful for time-synced lyrics. */}
-        {data?.found && synced && (
-          <div className="flex items-center gap-1 text-white/60">
+        <div className="flex items-center gap-2">
+          {/* Sync nudge — only useful for time-synced lyrics. */}
+          {data?.found && synced && (
+            <div className="flex items-center gap-1 text-white/60">
+              <button
+                type="button"
+                onClick={() => nudge(-0.5)}
+                aria-label="Lyrics earlier"
+                className="rounded bg-white/10 px-2 py-0.5 text-sm leading-none active:scale-90"
+              >
+                −
+              </button>
+              <span className="w-12 text-center text-[11px] tabular-nums">
+                {offset > 0 ? "+" : ""}
+                {offset.toFixed(1)}s
+              </span>
+              <button
+                type="button"
+                onClick={() => nudge(0.5)}
+                aria-label="Lyrics later"
+                className="rounded bg-white/10 px-2 py-0.5 text-sm leading-none active:scale-90"
+              >
+                +
+              </button>
+            </div>
+          )}
+          {/* Report wrong lyrics — only when lyrics are shown and you're signed
+              in (the server also restricts this to signed-in users). */}
+          {data?.found && signedIn && (
             <button
               type="button"
-              onClick={() => nudge(-0.5)}
-              aria-label="Lyrics earlier"
-              className="rounded bg-white/10 px-2 py-0.5 text-sm leading-none active:scale-90"
+              onClick={() => setConfirmReport(true)}
+              className="rounded bg-white/10 px-2 py-0.5 text-[11px] text-white/50 active:scale-90"
             >
-              −
+              ⚐ Report
             </button>
-            <span className="w-12 text-center text-[11px] tabular-nums">
-              {offset > 0 ? "+" : ""}
-              {offset.toFixed(1)}s
-            </span>
+          )}
+          {/* Restore — host only, and only when this song's lyrics were reported
+              wrong; undoes the report so the original match can return. */}
+          {isHost && data?.hasRejected && (
             <button
               type="button"
-              onClick={() => nudge(0.5)}
-              aria-label="Lyrics later"
-              className="rounded bg-white/10 px-2 py-0.5 text-sm leading-none active:scale-90"
+              onClick={restoreLyrics}
+              className="rounded bg-white/10 px-2 py-0.5 text-[11px] text-white/50 active:scale-90"
             >
-              +
+              ↩ Restore
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       <div
         ref={scrollRef}
@@ -210,6 +281,42 @@ export function LyricsPanel({ videoId, title, durationSec, currentTimeSec }: Pro
             );
           })}
       </div>
+
+      {/* Confirm "Report wrong lyrics" */}
+      {confirmReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setConfirmReport(false)}
+        >
+          <div
+            className="w-full max-w-xs rounded-2xl border border-white/10 bg-[#1a1a22] p-5 text-center shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-3xl">⚐</div>
+            <h3 className="mt-2 text-lg font-bold">Report wrong lyrics</h3>
+            <p className="mt-1 text-sm text-white/50">
+              These lyrics don’t match the song? We’ll skip this version and try
+              to find a different match.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmReport(false)}
+                className="flex-1 rounded-xl bg-white/10 py-2.5 font-semibold active:scale-95"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitReport}
+                className="flex-1 rounded-xl bg-fuchsia-500 py-2.5 font-bold active:scale-95"
+              >
+                Report
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

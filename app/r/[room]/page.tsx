@@ -147,6 +147,7 @@ export default function RemotePage() {
             onAddMany={addMany}
             onStar={favorite}
             starred={starred}
+            signedIn={signedIn}
           />
         </div>
         {tab !== "search" && (
@@ -173,8 +174,10 @@ export default function RemotePage() {
                 onRemove={removeSong}
                 onReorder={reorder}
                 onCommand={sendCommand}
+                onAdd={add}
                 onStar={favorite}
                 starred={starred}
+                signedIn={signedIn}
               />
             )}
           </div>

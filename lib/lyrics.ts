@@ -7,7 +7,7 @@
 // them into an artist/track guess before querying.
 
 import type { LyricLine, LyricsResult } from "@/lib/types";
-import { getCachedLyrics, putCachedLyrics } from "@/lib/db";
+import { getCachedLyrics, putCachedLyrics, rejectLyrics } from "@/lib/db";
 import { formatTime } from "@/lib/format";
 
 // How long to trust a cached MISS before trying the network again. Hits are
@@ -147,6 +147,18 @@ function plainToLines(plain: string): LyricLine[] {
     .filter((l, i, arr) => l.text || (i > 0 && arr[i - 1].text)); // collapse runs of blanks
 }
 
+// A stable short signature of a lyrics result (its normalised line text). Used
+// to remember which match a user reported as wrong so a re-fetch can skip it.
+export function lyricsSignature(result: LyricsResult): string {
+  const text = result.lines
+    .map((l) => l.text.trim().toLowerCase())
+    .filter(Boolean)
+    .join("\n");
+  let h = 5381; // djb2
+  for (let i = 0; i < text.length; i++) h = (((h << 5) + h) + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
 // Normalise a song/artist name for comparison: lowercase, strip diacritics and
 // punctuation, collapse whitespace. Keeps letters/numbers of ANY script so CJK
 // titles compare correctly. So "Beyoncé - HALO!" ≈ "beyonce halo" and
@@ -198,7 +210,8 @@ function fromLrclib(track: LrclibTrack): LyricsResult | null {
 async function fetchLrclib(
   artist: string | undefined,
   track: string,
-  durationSec: number
+  durationSec: number,
+  rejected: Set<string>
 ): Promise<LyricsResult | null> {
   const headers = { "User-Agent": USER_AGENT };
 
@@ -217,7 +230,7 @@ async function fetchLrclib(
       });
       if (res.ok) {
         const got = fromLrclib((await res.json()) as LrclibTrack);
-        if (got) return got;
+        if (got && !rejected.has(lyricsSignature(got))) return got;
       }
     } catch {
       // ignore — fall through to the fuzzy search
@@ -250,7 +263,7 @@ async function fetchLrclib(
     } catch {
       continue; // timeout/network — try the next query
     }
-    const got = pickBestCandidate(candidates, track, artist, durationSec);
+    const got = pickBestCandidate(candidates, track, artist, durationSec, rejected);
     if (got) return got;
   }
   return null;
@@ -265,10 +278,11 @@ function pickBestCandidate(
   candidates: LrclibTrack[],
   track: string,
   artist: string | undefined,
-  durationSec: number
+  durationSec: number,
+  rejected: Set<string>
 ): LyricsResult | null {
   if (!Array.isArray(candidates)) return null;
-  const best = candidates
+  const ranked = candidates
     .filter((c) => c.syncedLyrics || c.plainLyrics)
     .map((c) => ({
       c,
@@ -287,9 +301,15 @@ function pickBestCandidate(
         b.artist - a.artist ||
         Number(b.hasSynced) - Number(a.hasSynced) ||
         a.diff - b.diff
-    )[0];
+    );
 
-  return best ? fromLrclib(best.c) : null;
+  // Best match whose lyrics weren't reported wrong (so a report surfaces the
+  // next-best different match).
+  for (const x of ranked) {
+    const got = fromLrclib(x.c);
+    if (got && !rejected.has(lyricsSignature(got))) return got;
+  }
+  return null;
 }
 
 // ---- Musixmatch (RapidAPI) fallback ----
@@ -325,7 +345,8 @@ export function parseMusixmatch(data: unknown): LyricsResult | null {
 async function fetchMusixmatch(
   artist: string | undefined,
   track: string,
-  durationSec: number
+  durationSec: number,
+  rejected: Set<string>
 ): Promise<LyricsResult | null> {
   const key = process.env.RAPIDAPI_KEY;
   if (!key) return null; // not configured → skip (LRCLIB-only)
@@ -347,7 +368,10 @@ async function fetchMusixmatch(
     // Guard against a wrong-song match: the returned track name must match.
     const returned = data.track_info?.track_name;
     if (returned && nameScore(track, returned) === 0) return null;
-    return parseMusixmatch(data);
+    const result = parseMusixmatch(data);
+    // Skip a match the user already reported wrong for this video.
+    if (result && rejected.has(lyricsSignature(result))) return null;
+    return result;
   } catch {
     return null; // never let the fallback break the request
   }
@@ -361,28 +385,39 @@ export async function getLyrics(
   durationSec: number,
   opts: { force?: boolean } = {}
 ): Promise<LyricsResult | null> {
+  const cached = getCachedLyrics(videoId);
+
   // `force` skips the cache read (re-queries the providers) — used by the
   // ?refresh=1 debug flag. We still write the fresh result back below.
-  if (!opts.force) {
-    const cached = getCachedLyrics(videoId);
-    if (cached) {
-      if (cached.result) return cached.result; // cached hit
-      if (Date.now() - cached.fetchedAt < MISS_TTL_MS) return null; // cached miss
-    }
+  if (!opts.force && cached) {
+    if (cached.result) return cached.result; // cached hit
+    if (Date.now() - cached.fetchedAt < MISS_TTL_MS) return null; // cached miss
   }
+
+  // Matches the user reported as wrong — skip them so we find a different one.
+  const rejected = new Set(cached?.rejected ?? []);
 
   const { artist, track } = parseTitle(rawTitle);
 
   let result: LyricsResult | null = null;
   try {
-    result = await fetchLrclib(artist, track, durationSec);
+    result = await fetchLrclib(artist, track, durationSec, rejected);
   } catch {
     result = null;
   }
   if (!result) {
-    result = await fetchMusixmatch(artist, track, durationSec);
+    result = await fetchMusixmatch(artist, track, durationSec, rejected);
   }
 
   putCachedLyrics(videoId, result);
   return result;
+}
+
+// Report the currently-cached lyrics for a video as wrong: record this match's
+// signature (so it's skipped) and clear the cache, so the next lookup re-queries
+// the providers and picks a DIFFERENT match.
+export function reportWrongLyrics(videoId: string): void {
+  const cached = getCachedLyrics(videoId);
+  const signature = cached?.result ? lyricsSignature(cached.result) : "";
+  rejectLyrics(videoId, signature);
 }
