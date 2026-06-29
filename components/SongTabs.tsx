@@ -9,6 +9,7 @@ import { Reorder, useDragControls } from "framer-motion";
 import { signIn } from "next-auth/react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { LyricsPanel } from "@/components/LyricsPanel";
 import { isValidPassword, normalizePassword } from "@/lib/code";
 import { formatTime } from "@/lib/format";
 import type { PlayerCommand, QueueItem, SfxName } from "@/lib/types";
@@ -22,7 +23,7 @@ export const TAB_LABELS: Record<Tab, string> = {
   search: "Search",
   favorites: "★ Faves",
   recent: "Recent",
-  queue: "Queue",
+  queue: "Player",
 };
 
 // Reaction buttons → play a sound effect on the TV (host).
@@ -472,7 +473,100 @@ export function RecentTab({
   );
 }
 
-export function QueueTab({
+// The now-playing card: song info + seek bar + transport controls. (Lyrics live
+// in the tabbed area below the card — see PlayerTab.)
+function NowPlayingCard({
+  nowPlaying,
+  player,
+  onCommand,
+  onStar,
+  starred,
+  onRequestSkip,
+}: {
+  nowPlaying: QueueItem;
+  player: { status: string; currentTimeSec: number; durationSec: number } | null;
+  onCommand: (cmd: PlayerCommand) => void;
+  onStar: (r: SearchResult) => void;
+  starred: Set<string>;
+  onRequestSkip: () => void;
+}) {
+  const isPlaying = player?.status === "playing";
+  const dur = player?.durationSec || nowPlaying.durationSec || 0;
+  const cur = player?.currentTimeSec ?? 0;
+
+  return (
+    <div className="rounded-2xl bg-gradient-to-br from-fuchsia-500/20 to-pink-500/10 p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-300">
+          Now playing
+        </div>
+        <button
+          type="button"
+          onClick={() => onStar(nowPlaying)}
+          className={`-mt-1 text-2xl leading-none active:scale-90 ${
+            starred.has(nowPlaying.videoId) ? "text-amber-300" : "text-white/40"
+          }`}
+          aria-label="Save to favorites"
+        >
+          {starred.has(nowPlaying.videoId) ? "★" : "☆"}
+        </button>
+      </div>
+      <div className="mt-1 line-clamp-2 font-bold">{nowPlaying.title}</div>
+      <div className="truncate text-sm text-white/60">🎙️ {nowPlaying.singer}</div>
+
+      {/* Instant seek bar */}
+      <div className="mt-3">
+        <input
+          type="range"
+          aria-label="Seek"
+          min={0}
+          max={Math.max(dur, 1)}
+          value={Math.min(cur, dur || 1)}
+          onChange={(e) =>
+            onCommand({ cmd: "seek", valueSec: Number(e.target.value) })
+          }
+          className="w-full accent-fuchsia-500"
+        />
+        <div className="flex justify-between text-xs text-white/40">
+          <span>{formatTime(cur)}</span>
+          <span>{formatTime(dur)}</span>
+        </div>
+      </div>
+
+      {/* Transport */}
+      <div className="mt-3 flex items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={() => onCommand({ cmd: "restart" })}
+          className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold active:scale-95"
+        >
+          ⏮ Restart
+        </button>
+        <button
+          type="button"
+          onClick={() => onCommand({ cmd: isPlaying ? "pause" : "play" })}
+          className="rounded-full bg-white px-6 py-2 text-sm font-bold text-black active:scale-95"
+        >
+          {isPlaying ? "⏸ Pause" : "▶ Play"}
+        </button>
+        <button
+          type="button"
+          onClick={onRequestSkip}
+          className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold active:scale-95"
+        >
+          ⏭ Skip
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Sub-tabs under the now-playing card. Module-scoped so the choice survives the
+// card re-mounting when you switch the main tab or a new song starts.
+type SubTab = "next" | "lyrics" | "related";
+let lastSub: SubTab = "next";
+
+export function PlayerTab({
   queue,
   nowPlaying,
   player,
@@ -491,11 +585,14 @@ export function QueueTab({
   onStar: (r: SearchResult) => void;
   starred: Set<string>;
 }) {
-  const isPlaying = player?.status === "playing";
-  const dur = player?.durationSec ?? 0;
-  const cur = player?.currentTimeSec ?? 0;
   // Skipping cuts off the current singer, so confirm before doing it.
   const [confirmSkip, setConfirmSkip] = useState(false);
+
+  // Sub-tab below the now-playing card; remembered across re-mounts.
+  const [sub, setSub] = useState<SubTab>(lastSub);
+  useEffect(() => {
+    lastSub = sub;
+  }, [sub]);
 
   // Local copy so a drag feels instant; we only re-sync from the server when the
   // SET of songs changes (someone added/removed, or a song finished) — not on
@@ -513,107 +610,100 @@ export function QueueTab({
   // Commit the final order to the server when a drag ends.
   const commitOrder = () => onReorder(itemsRef.current.map((it) => it.id));
 
+  const SUB_TABS: { key: SubTab; label: string }[] = [
+    { key: "next", label: `Queue ${items.length}` },
+    { key: "lyrics", label: "Lyrics" },
+    { key: "related", label: "Related" },
+  ];
+
   return (
     <div>
-      {nowPlaying ? (
-        <div className="rounded-2xl bg-gradient-to-br from-fuchsia-500/20 to-pink-500/10 p-4">
-          <div className="flex items-start justify-between gap-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-300">
-              Now playing
+      {/* Sub-tabs: Queue / Lyrics / Related */}
+      <div className="grid grid-cols-3 gap-1 rounded-xl bg-black/20 p-1">
+        {SUB_TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setSub(t.key)}
+            className={`rounded-lg py-2 text-sm font-semibold transition active:scale-95 ${
+              sub === t.key ? "bg-white text-black" : "text-white/50"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-3">
+        {sub === "next" && (
+          <>
+            {/* The play controls live under Queue only. */}
+            {nowPlaying ? (
+              <NowPlayingCard
+                nowPlaying={nowPlaying}
+                player={player}
+                onCommand={onCommand}
+                onStar={onStar}
+                starred={starred}
+                onRequestSkip={() => setConfirmSkip(true)}
+              />
+            ) : (
+              <div className="rounded-2xl bg-white/5 p-6 text-center text-white/40">
+                Nothing playing. Add a song from the Search tab.
+              </div>
+            )}
+
+            <div className="mt-4">
+              {items.length > 1 && (
+                <p className="mb-2 text-right text-xs text-white/30">
+                  drag ⠿ to reorder
+                </p>
+              )}
+              <Reorder.Group
+                axis="y"
+                values={items}
+                onReorder={setItems}
+                className="space-y-2"
+              >
+                {items.map((item, i) => (
+                  <QueueRow
+                    key={item.id}
+                    item={item}
+                    index={i}
+                    onRemove={onRemove}
+                    onCommit={commitOrder}
+                  />
+                ))}
+              </Reorder.Group>
+              {items.length === 0 && (
+                <p className="text-sm text-white/30">Queue is empty.</p>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => onStar(nowPlaying)}
-              className={`-mt-1 text-2xl leading-none active:scale-90 ${
-                starred.has(nowPlaying.videoId)
-                  ? "text-amber-300"
-                  : "text-white/40"
-              }`}
-              aria-label="Save to favorites"
-            >
-              {starred.has(nowPlaying.videoId) ? "★" : "☆"}
-            </button>
-          </div>
-          <div className="mt-1 font-bold">{nowPlaying.title}</div>
-          <div className="text-sm text-white/60">🎙️ {nowPlaying.singer}</div>
+          </>
+        )}
 
-          {/* Instant seek bar */}
-          <div className="mt-3">
-            <input
-              type="range"
-              aria-label="Seek"
-              min={0}
-              max={Math.max(dur, 1)}
-              value={Math.min(cur, dur || 1)}
-              onChange={(e) =>
-                onCommand({ cmd: "seek", valueSec: Number(e.target.value) })
-              }
-              className="w-full accent-fuchsia-500"
-            />
-            <div className="flex justify-between text-xs text-white/40">
-              <span>{formatTime(cur)}</span>
-              <span>{formatTime(dur)}</span>
+        {sub === "lyrics" &&
+          (nowPlaying ? (
+            <div className="h-[55vh]">
+              <LyricsPanel
+                videoId={nowPlaying.videoId}
+                title={nowPlaying.title}
+                durationSec={player?.durationSec || nowPlaying.durationSec || 0}
+                currentTimeSec={player?.currentTimeSec ?? 0}
+              />
             </div>
-          </div>
+          ) : (
+            <p className="text-sm text-white/30">
+              Nothing playing yet — lyrics show for the current song.
+            </p>
+          ))}
 
-          {/* Transport */}
-          <div className="mt-3 flex items-center justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => onCommand({ cmd: "restart" })}
-              className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold active:scale-95"
-            >
-              ⏮ Restart
-            </button>
-            <button
-              type="button"
-              onClick={() => onCommand({ cmd: isPlaying ? "pause" : "play" })}
-              className="rounded-full bg-white px-6 py-2 text-sm font-bold text-black active:scale-95"
-            >
-              {isPlaying ? "⏸ Pause" : "▶ Play"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmSkip(true)}
-              className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold active:scale-95"
-            >
-              ⏭ Skip
-            </button>
+        {sub === "related" && (
+          <div className="rounded-2xl bg-white/5 p-6 text-center text-sm text-white/30">
+            Related songs — coming soon.
           </div>
-        </div>
-      ) : (
-        <div className="rounded-2xl bg-white/5 p-6 text-center text-white/40">
-          Nothing playing. Add a song from the Search tab.
-        </div>
-      )}
-
-      <div className="mt-6 mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-white/40">
-          Up next · {items.length}
-        </h3>
-        {items.length > 1 && (
-          <span className="text-xs text-white/30">drag ⠿ to reorder</span>
         )}
       </div>
-      <Reorder.Group
-        axis="y"
-        values={items}
-        onReorder={setItems}
-        className="space-y-2"
-      >
-        {items.map((item, i) => (
-          <QueueRow
-            key={item.id}
-            item={item}
-            index={i}
-            onRemove={onRemove}
-            onCommit={commitOrder}
-          />
-        ))}
-      </Reorder.Group>
-      {items.length === 0 && (
-        <p className="text-sm text-white/30">Queue is empty.</p>
-      )}
 
       {confirmSkip && nowPlaying && (
         <div

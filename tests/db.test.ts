@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addFavorite,
+  getCachedLyrics,
   listFavorites,
+  putCachedLyrics,
   recordPlay,
   removeFavorite,
+  setLyricsOffset,
   type SongMeta,
 } from "@/lib/db";
+import type { LyricsResult } from "@/lib/types";
 
 // Each test uses a unique userId so the shared in-memory DB stays isolated.
 let n = 0;
@@ -82,5 +86,47 @@ describe("play counts + plays sort", () => {
     addFavorite(u, song("a"));
     const byPlays = listFavorites(u, "plays");
     expect(byPlays.map((s) => s.videoId)).toEqual(["a"]);
+  });
+});
+
+describe("lyrics cache + sync offset", () => {
+  const result: LyricsResult = {
+    synced: true,
+    source: "lrclib",
+    lines: [{ timeSec: 1, text: "hi" }],
+  };
+
+  it("returns null for a video never looked up", () => {
+    expect(getCachedLyrics("never")).toBeNull();
+  });
+
+  it("round-trips a cached hit with a default zero offset", () => {
+    putCachedLyrics("vid-hit", result);
+    const cached = getCachedLyrics("vid-hit");
+    expect(cached?.result).toEqual(result);
+    expect(cached?.offset).toBe(0);
+  });
+
+  it("caches a miss as a null result", () => {
+    putCachedLyrics("vid-miss", null);
+    const cached = getCachedLyrics("vid-miss");
+    expect(cached).not.toBeNull();
+    expect(cached?.result).toBeNull();
+  });
+
+  it("persists a sync offset and preserves it across a re-fetch", () => {
+    putCachedLyrics("vid-off", result);
+    setLyricsOffset("vid-off", 2.5);
+    expect(getCachedLyrics("vid-off")?.offset).toBe(2.5);
+    // Re-fetching the same video must not wipe the user's nudge.
+    putCachedLyrics("vid-off", result);
+    expect(getCachedLyrics("vid-off")?.offset).toBe(2.5);
+  });
+
+  it("can set an offset before lyrics are cached (upsert)", () => {
+    setLyricsOffset("vid-early", -1.5);
+    const cached = getCachedLyrics("vid-early");
+    expect(cached?.offset).toBe(-1.5);
+    expect(cached?.result).toBeNull();
   });
 });

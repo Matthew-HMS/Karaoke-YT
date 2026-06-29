@@ -5,6 +5,7 @@
 
 import Database from "better-sqlite3";
 import path from "path";
+import type { LyricsResult } from "@/lib/types";
 
 export type SongMeta = {
   videoId: string;
@@ -116,6 +117,79 @@ const removeFavStmt = db.prepare(
 
 export function removeFavorite(userId: string, videoId: string): void {
   removeFavStmt.run(userId, videoId);
+}
+
+// Lyrics cache, keyed by YouTube videoId. `data` is the JSON LyricsResult, or
+// NULL when we looked and found nothing (a "miss" — cached so we don't keep
+// burning the limited Musixmatch quota on songs that have no lyrics). `offset`
+// is a manual sync nudge (seconds) the user dialed in for this video, so a
+// music video's intro/outro drift stays corrected across future plays.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lyrics (
+    videoId   TEXT PRIMARY KEY,
+    data      TEXT,
+    fetchedAt INTEGER NOT NULL,
+    offset    REAL NOT NULL DEFAULT 0
+  );
+`);
+
+// Migration for databases created before the sync-offset column existed.
+const lyricsCols = db.prepare(`PRAGMA table_info(lyrics)`).all() as {
+  name: string;
+}[];
+if (!lyricsCols.some((c) => c.name === "offset")) {
+  db.exec(`ALTER TABLE lyrics ADD COLUMN offset REAL NOT NULL DEFAULT 0`);
+}
+
+const getLyricsStmt = db.prepare(
+  `SELECT data, fetchedAt, offset FROM lyrics WHERE videoId = ?`
+);
+
+// Returns { result, fetchedAt, offset } when we've looked before (result is null
+// for a cached miss), or null when this videoId has never been fetched.
+export function getCachedLyrics(
+  videoId: string
+): { result: LyricsResult | null; fetchedAt: number; offset: number } | null {
+  const row = getLyricsStmt.get(videoId) as
+    | { data: string | null; fetchedAt: number; offset: number }
+    | undefined;
+  if (!row) return null;
+  return {
+    result: row.data ? (JSON.parse(row.data) as LyricsResult) : null,
+    fetchedAt: row.fetchedAt,
+    offset: row.offset,
+  };
+}
+
+// Insert/update the cached lyrics, leaving any existing manual `offset` intact
+// (a re-fetch of the same video shouldn't wipe the user's sync nudge).
+const putLyricsStmt = db.prepare(
+  `INSERT INTO lyrics (videoId, data, fetchedAt)
+   VALUES (@videoId, @data, @fetchedAt)
+   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt`
+);
+
+export function putCachedLyrics(
+  videoId: string,
+  result: LyricsResult | null
+): void {
+  putLyricsStmt.run({
+    videoId,
+    data: result ? JSON.stringify(result) : null,
+    fetchedAt: Date.now(),
+  });
+}
+
+// Save the manual sync offset for a video. Upserts so it works even if the
+// lyrics row somehow doesn't exist yet (creates a placeholder miss row).
+const setLyricsOffsetStmt = db.prepare(
+  `INSERT INTO lyrics (videoId, data, fetchedAt, offset)
+   VALUES (@videoId, NULL, @fetchedAt, @offset)
+   ON CONFLICT(videoId) DO UPDATE SET offset = @offset`
+);
+
+export function setLyricsOffset(videoId: string, offset: number): void {
+  setLyricsOffsetStmt.run({ videoId, offset, fetchedAt: Date.now() });
 }
 
 export default db;

@@ -5,8 +5,15 @@
 // as a single long-lived Node process (on a VM, under systemd). All live room
 // state is held in memory here (lib/rooms.ts).
 
+import dns from "node:dns";
 import { createServer } from "http";
 import next from "next";
+
+// Prefer IPv4 when resolving outbound hosts. On some networks (notably macOS),
+// Node/undici otherwise tries an unreachable IPv6 address first and stalls until
+// the request times out — even though `curl` works fine. This was causing the
+// lyrics provider fetches (lrclib.net) to time out. Set once for the process.
+dns.setDefaultResultOrder("ipv4first");
 import { Server as SocketIOServer } from "socket.io";
 import {
   ClientToServerEvents,

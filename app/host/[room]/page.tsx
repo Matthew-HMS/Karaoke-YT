@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FavoritesTab,
   PasswordGate,
-  QueueTab,
+  PlayerTab,
   RecentTab,
   RoomMissing,
   SearchTab,
@@ -577,7 +577,6 @@ export default function HostPage() {
                 }`}
               >
                 {TAB_LABELS[t]}
-                {t === "queue" ? ` ${queue.length}` : ""}
               </button>
             ))}
           </nav>
@@ -598,7 +597,7 @@ export default function HostPage() {
               />
             </div>
             {tab !== "search" && (
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+              <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-4">
                 {tab === "favorites" &&
                   (signedIn ? (
                     <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
@@ -614,7 +613,7 @@ export default function HostPage() {
                   />
                 )}
                 {tab === "queue" && (
-                  <QueueTab
+                  <PlayerTab
                     queue={queue}
                     nowPlaying={nowPlaying}
                     player={player}

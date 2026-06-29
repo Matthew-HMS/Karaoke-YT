@@ -11,6 +11,18 @@ export type QueueItem = {
   userId?: string; // signed-in adder's user id, for per-user play counts
 };
 
+// ---- Lyrics ----
+
+// One lyric line. For synced lyrics `timeSec` is the line's start time; for
+// plain (un-timed) lyrics it's 0 and lines are shown as static scrollable text.
+export type LyricLine = { timeSec: number; text: string };
+
+export type LyricsResult = {
+  synced: boolean; // true = timed lines (highlight in sync); false = plain text
+  lines: LyricLine[];
+  source: "lrclib" | "musixmatch";
+};
+
 export type PlayerStatus = "playing" | "paused" | "idle";
 
 export type PlayerState = {

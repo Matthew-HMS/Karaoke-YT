@@ -31,6 +31,15 @@ instantly **seek to any part** of a song.
   with a **"Karaoke versions only"** toggle, **Load more** paging, and your
   favorites pinned to the top. Titles clamp to two lines — **tap** a result's
   title to reveal its full name. Paste a single link **or a whole playlist**.
+- 🎶 **Lyrics** — **swipe** the now-playing card left to flip from the song +
+  play controls to the **lyrics** (header swaps "Now playing" ↔ "Lyrics"; swipe
+  right or tap the dots to go back). Time-synced lyrics **highlight the current
+  line** in step with playback; plain-only lyrics show as scrollable text. A
+  **−/+ sync nudge** shifts the timing for music videos whose intro/outro drifts
+  from the studio track, and that offset is **saved per video** so it sticks on
+  later plays. Sourced from **LRCLIB** (free, no key) with an optional
+  **Musixmatch** (RapidAPI) fallback; results — including misses — are cached in
+  SQLite to stay within free quotas.
 - 🔄 **Real-time sync** over Socket.IO (queue, play/pause/skip/seek).
 - ↕️ **Drag-to-reorder** the queue (drag the ⠿ grip).
 - 👤 **Sign in with Google** (Auth.js) for **personal favorites**, sortable by
@@ -80,6 +89,11 @@ Environment (`.env.local`):
   main search path).
 - `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL` — Google
   sign-in. `AUTH_URL` must be your public origin (required behind a proxy/tunnel).
+- `RAPIDAPI_KEY` — *optional* Musixmatch lyrics fallback via the
+  `musixmatch-lyrics-songs` RapidAPI provider (used only when LRCLIB has
+  nothing; returns synced lyrics too). Lyrics work without it via LRCLIB alone.
+  Override the host with `MUSIXMATCH_RAPIDAPI_HOST` if needed (defaults to
+  `musixmatch-lyrics-songs.p.rapidapi.com`).
 
 ## Testing
 
@@ -87,8 +101,9 @@ Unit tests (Vitest) cover the core logic: room-code/password validation
 (`lib/code.ts`), time formatting (`lib/format.ts`), the in-memory room/queue
 engine (`lib/rooms.ts`), YouTube URL/duration parsing + the Data-API helpers
 (`lib/youtube.ts`), the search orchestrator with cache + fallback (`lib/search.ts`),
-the yt-dlp scraper (`lib/ytsearch.ts`, with `child_process` mocked), and the
-SQLite favorites/plays layer (`lib/db.ts`, against an in-memory DB).
+the yt-dlp scraper (`lib/ytsearch.ts`, with `child_process` mocked), the
+SQLite favorites/plays layer (`lib/db.ts`, against an in-memory DB), and the
+lyrics title-cleanup + LRC parser (`lib/lyrics.ts`).
 
 ```bash
 npm test           # run once

@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import {
   FavoritesTab,
   PasswordGate,
-  QueueTab,
+  PlayerTab,
   RecentTab,
   RoomMissing,
   SearchTab,
@@ -132,7 +132,6 @@ export default function RemotePage() {
             }`}
           >
             {TAB_LABELS[t]}
-            {t === "queue" && state ? ` ${state.queue.length}` : ""}
           </button>
         ))}
       </nav>
@@ -151,7 +150,7 @@ export default function RemotePage() {
           />
         </div>
         {tab !== "search" && (
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-4">
             {tab === "favorites" &&
               (signedIn ? (
                 <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
@@ -167,7 +166,7 @@ export default function RemotePage() {
               />
             )}
             {tab === "queue" && (
-              <QueueTab
+              <PlayerTab
                 queue={state?.queue ?? []}
                 nowPlaying={state?.nowPlaying ?? null}
                 player={livePlayer ?? state?.playerState ?? null}
