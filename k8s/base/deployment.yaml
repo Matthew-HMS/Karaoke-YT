@@ -50,28 +50,36 @@ spec:
             httpGet:
               path: /healthz
               port: http
+            # timeout defaults to 1s, which /healthz can miss when the process is
+            # under memory/CPU pressure — a spurious failure then kills the pod.
+            # Give the probe room to answer before we treat it as down.
+            timeoutSeconds: 5
             periodSeconds: 2
             failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            timeoutSeconds: 5
             periodSeconds: 10
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+            timeoutSeconds: 5
             periodSeconds: 5
             failureThreshold: 3
           resources:
             requests:
               cpu: "100m"
-              memory: "256Mi"
+              memory: "512Mi"
             limits:
-              # yt-dlp spawns python for search; give headroom for spikes.
+              # yt-dlp spawns python for search on top of the Next.js baseline; at
+              # 768Mi the container was being OOMKilled (exit 137) under real search
+              # load, restarting every time and surfacing as ~10s of nginx 502s.
               cpu: "1"
-              memory: "768Mi"
+              memory: "1536Mi"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
