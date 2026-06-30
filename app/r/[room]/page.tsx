@@ -9,7 +9,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FavoritesTab,
   PasswordGate,
@@ -17,11 +17,12 @@ import {
   RecentTab,
   RoomMissing,
   SearchTab,
-  SFX_BUTTONS,
   SignInPrompt,
   TAB_LABELS,
   type Tab,
 } from "@/components/SongTabs";
+import { ControlsMenu } from "@/components/ControlsMenu";
+import { useMicPitch } from "@/lib/useMicPitch";
 import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
 
@@ -48,7 +49,20 @@ export default function RemotePage() {
     reorder,
     sendCommand,
     sendSfx,
+    reportPitch,
+    showTarget,
+    setShowTarget,
+    spinWheel,
   } = useRoom(code, "remote", { password: pw, userId: session?.user?.id });
+
+  // Seed the random-singer wheel with the people who've queued songs.
+  const queuedSingers = useMemo(() => {
+    const all = [
+      ...(state?.queue ?? []).map((q) => q.singer),
+      ...(state?.nowPlaying ? [state.nowPlaying.singer] : []),
+    ];
+    return [...new Set(all.map((s) => s?.trim()).filter(Boolean))] as string[];
+  }, [state]);
 
   // Remember a password that worked.
   useEffect(() => {
@@ -56,15 +70,36 @@ export default function RemotePage() {
   }, [joined, pw, code]);
 
   const [tab, setTab] = useState<Tab>("search");
-  const [showReactions, setShowReactions] = useState(false);
 
   // Favorites (★), add-to-queue + "added" toast — shared with host. The singer
-  // name is applied automatically (Google name when signed in, else "Guest").
-  const { starred, favorite, add, addMany, toast } = useSongLibrary({
-    addSong,
-    signedIn,
-    sessionName: session?.user?.name,
+  // name (persisted) doubles as the identity stamped on pitch samples, so the
+  // TV ribbon/score can name a guest even when they're not signed in.
+  const { name, saveName, starred, favorite, add, addMany, toast } =
+    useSongLibrary({
+      addSong,
+      signedIn,
+      sessionName: session?.user?.name,
+    });
+
+  // Mic pitch capture lives at the page level (not inside the menu panel) so it
+  // keeps running when the panel is closed mid-song.
+  const mic = useMicPitch({ singer: name.trim() || "Guest", onSample: reportPitch });
+
+  // Auto-stop the mic when the song ends (now-playing changes or the queue
+  // empties), so each take is one song — the singer re-arms Sing for the next.
+  // Read `mic` via a ref so this only re-runs on a song change, not every render.
+  const micRef = useRef(mic);
+  useEffect(() => {
+    micRef.current = mic;
   });
+  const songId = state?.nowPlaying?.id;
+  const prevSongId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (prevSongId.current !== undefined && prevSongId.current !== songId) {
+      if (micRef.current.active) micRef.current.stop();
+    }
+    prevSongId.current = songId;
+  }, [songId]);
 
   // Gate the remote behind room-exists + password checks.
   if (joinError === "not_found") return <RoomMissing code={code} />;
@@ -198,39 +233,18 @@ export default function RemotePage() {
         )}
       </AnimatePresence>
 
-      {/* Reactions — a button that reveals the sound-effect options (play on TV). */}
-      <div className="fixed bottom-5 right-5 z-30 flex flex-col items-end gap-2">
-        <AnimatePresence>
-          {showReactions && (
-            <motion.div
-              initial={{ opacity: 0, y: 10, scale: 0.9 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.9 }}
-              className="flex flex-col gap-1 rounded-2xl border border-white/10 bg-[#1a1a22] p-2 shadow-xl"
-            >
-              {SFX_BUTTONS.map((b) => (
-                <button
-                  key={b.name}
-                  type="button"
-                  onClick={() => sendSfx(b.name)}
-                  className="flex items-center gap-2 rounded-xl px-3 py-2 text-left transition active:scale-95 active:bg-white/10"
-                >
-                  <span className="text-2xl">{b.emoji}</span>
-                  <span className="text-sm font-medium">{b.label}</span>
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-        <button
-          type="button"
-          onClick={() => setShowReactions((v) => !v)}
-          aria-label="Reactions"
-          className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-[#1a1a22] text-2xl shadow-lg shadow-black/40 transition active:scale-95"
-        >
-          {showReactions ? "✕" : "🎉"}
-        </button>
-      </div>
+      {/* One floating menu: Sing (mic + name) + Target toggle + Reactions.
+          Shared with the host so both surfaces are identical. */}
+      <ControlsMenu
+        mic={mic}
+        name={name}
+        onNameChange={saveName}
+        showTarget={showTarget}
+        onToggleTarget={() => setShowTarget(!showTarget)}
+        onSfx={sendSfx}
+        onSpin={spinWheel}
+        suggestedNames={queuedSingers}
+      />
     </main>
   );
 }

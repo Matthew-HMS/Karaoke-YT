@@ -7,7 +7,7 @@
 import { searchSongs } from "./search";
 import { getPlaylistViaYtDlp, getRelatedViaYtDlp } from "./ytsearch";
 import { getMostPopularMusic, type SearchResult } from "./youtube";
-import { getKnownVideoIds, listFavorites, listTopPlayed } from "./db";
+import { listFavorites, listTopPlayed } from "./db";
 
 const RELATED_TTL_MS = 30 * 60 * 1000; // a song's "related" list is stable
 const TRENDING_TTL_MS = 60 * 60 * 1000; // refresh the trending chart hourly
@@ -103,7 +103,7 @@ const ENGLISH_HITS = [
 ];
 
 const JAPANESE_HITS = [
-  "米津玄師 Lemon", "米津玄師 馬と鹿", "YOASOBI 夜に駆ける", "YOASOBI アイドル",
+  "米津玄師 Lemon", "米津玄師 馬と鹿", "YOASOBI アイドル",
   "Official髭男dism Pretender", "Official髭男dism Subtitle", "あいみょん マリーゴールド",
   "あいみょん 君はロックを聴かない", "King Gnu 白日", "LiSA 紅蓮華", "LiSA 炎",
   "宇多田ヒカル First Love", "宇多田ヒカル Automatic", "中島美嘉 雪の華",
@@ -386,8 +386,8 @@ export async function getTrending(): Promise<SearchResult[]> {
 // Personalized recommendations: take the user's most-played + recently
 // favorited songs as seeds, expand each into its related feed, then rank by how
 // many seeds surfaced the same song (cross-seed agreement = stronger signal).
-// Songs the user already knows (played or favorited) are removed. With no
-// history we just return trending.
+// Only favorited songs are removed; already-played songs stay eligible so they
+// can resurface. With no history we just return trending.
 export async function getRecommendations(
   userId: string
 ): Promise<SearchResult[]> {
@@ -414,12 +414,14 @@ export async function getRecommendations(
     seedIds.map((id) => getRelated(id, titleById.get(id)))
   );
 
-  const known = getKnownVideoIds(userId);
+  // Only filter out favorites — songs the user has *played* stay eligible so
+  // they can resurface (people like singing the same songs again).
+  const excluded = new Set(favorites.map((f) => f.videoId));
   const score = new Map<string, number>();
   const meta = new Map<string, SearchResult>();
   for (const feed of feeds) {
     for (const song of feed) {
-      if (known.has(song.videoId) || seedIds.includes(song.videoId)) continue;
+      if (excluded.has(song.videoId) || seedIds.includes(song.videoId)) continue;
       score.set(song.videoId, (score.get(song.videoId) ?? 0) + 1);
       if (!meta.has(song.videoId)) meta.set(song.videoId, song);
     }

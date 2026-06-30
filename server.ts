@@ -32,6 +32,7 @@ import {
   touchRoom,
 } from "./lib/rooms";
 import { recordPlay } from "./lib/db";
+import { ensureContour } from "./lib/reference";
 import type { QueueItem } from "./lib/types";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -127,6 +128,9 @@ app.prepare().then(() => {
       const prevId = room.nowPlaying?.id;
       addToQueue(room, item, socket.id);
       recordIfNewSong(prevId, room.nowPlaying);
+      // Pre-warm the pitch-reference contour while the song waits in the queue,
+      // so the karaoke target line is ready by the time it plays (cached after).
+      ensureContour(item.videoId);
       broadcastState(code);
     });
 
@@ -174,6 +178,30 @@ app.prepare().then(() => {
     // plays it. (Broadcast to everyone in the room; only the host page acts.)
     socket.on("sfx:play", ({ code, name }) => {
       io.to(code).emit("sfx:play", { name });
+    });
+
+    // A singing remote streams mic pitch ~20x/sec → relay to the other clients
+    // (the host renders the ribbon). Deliberately does NOT touch room state or
+    // refresh the idle timer: it's high-frequency and ephemeral, so we keep it
+    // off the room:state broadcast path entirely.
+    // Broadcast to EVERYONE in the room incl. the sender, so a host that's also
+    // a singer (phone-as-host) sees its own pitch on its own ribbon — the host
+    // is where the ribbon renders, so it must receive its own samples too.
+    socket.on("pitch:report", ({ code, sample }) => {
+      io.to(code).emit("pitch:sample", sample);
+    });
+
+    // Room-wide "show target line" toggle → relay to everyone (hosts obey it,
+    // other remotes mirror the switch). Low-frequency, no room-state storage.
+    socket.on("pitch:showTarget", ({ code, show }) => {
+      io.to(code).emit("pitch:showTarget", { show });
+    });
+
+    // Random-singer wheel → relay the spin to EVERYONE (incl. the sender) so the
+    // TV and every phone animate the identical wheel and land on the same name.
+    socket.on("wheel:spin", ({ code, names, winner, turns }) => {
+      if (!Array.isArray(names) || names.length < 2) return;
+      io.to(code).emit("wheel:spin", { names, winner, turns });
     });
 
     // Host: current video ended → advance the queue and resync. With multiple

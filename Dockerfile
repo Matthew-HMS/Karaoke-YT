@@ -32,11 +32,12 @@ ENV NODE_ENV=production \
     DB_PATH=/data/singalong.db \
     YTDLP_PATH=/usr/local/bin/yt-dlp
 
-# python3: yt-dlp's runtime. dumb-init: forwards signals so SIGTERM reaches Node
-# (graceful shutdown). The standalone yt-dlp binary is owned by `node` so the
-# entrypoint can self-update it on every start without root.
+# python3: yt-dlp's runtime. ffmpeg: decodes downloaded audio to PCM for the
+# pitch-reference contour generator (lib/reference.ts). dumb-init: forwards
+# signals so SIGTERM reaches Node (graceful shutdown). The standalone yt-dlp
+# binary is owned by `node` so the entrypoint can self-update it without root.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 ca-certificates dumb-init curl \
+      python3 ffmpeg ca-certificates dumb-init curl \
   && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
        -o /usr/local/bin/yt-dlp \
   && chmod a+rx /usr/local/bin/yt-dlp \

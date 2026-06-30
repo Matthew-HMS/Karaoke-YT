@@ -1,5 +1,10 @@
 // Shared types used by both the Socket.IO server and the React clients.
 
+// Re-export the pitch sample type so it lives alongside the other socket
+// payloads (its detection/scoring logic stays in lib/pitch.ts).
+export type { PitchSample } from "./pitch";
+import type { PitchSample } from "./pitch";
+
 export type QueueItem = {
   id: string; // uuid, unique per queue entry
   videoId: string; // YouTube video id
@@ -71,6 +76,22 @@ export interface ClientToServerEvents {
   "player:ended": (payload: { code: string; itemId?: string }) => void;
   // A remote triggers a sound effect; the host (TV) plays it.
   "sfx:play": (payload: { code: string; name: SfxName }) => void;
+  // A singing remote streams its detected mic pitch ~20x/sec; relayed to the
+  // host(s) for the live pitch ribbon + score. Ephemeral — never stored.
+  "pitch:report": (payload: { code: string; sample: PitchSample }) => void;
+  // Room-wide toggle for the TV's blue "target" pitch line. Relayed to everyone
+  // so all hosts obey and other remotes' toggles stay in sync.
+  "pitch:showTarget": (payload: { code: string; show: boolean }) => void;
+  // Spin the "random singer" wheel. The initiating phone picks the winner +
+  // spin amount and ships its name list, so every screen (TV + phones) animates
+  // the SAME wheel to the SAME result. `winner` indexes `names`; `turns` is the
+  // shared number of full spins so they all land together.
+  "wheel:spin": (payload: {
+    code: string;
+    names: string[];
+    winner: number;
+    turns: number;
+  }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -78,6 +99,16 @@ export interface ServerToClientEvents {
   "player:command": (cmd: PlayerCommand) => void;
   "player:state": (state: PlayerState) => void;
   "sfx:play": (payload: { name: SfxName }) => void;
+  // Host receives each singer's pitch sample for the ribbon overlay.
+  "pitch:sample": (sample: PitchSample) => void;
+  // Show/hide the TV's target pitch line (synced room-wide).
+  "pitch:showTarget": (payload: { show: boolean }) => void;
+  // Animate the random-singer wheel (same payload on every screen).
+  "wheel:spin": (payload: {
+    names: string[];
+    winner: number;
+    turns: number;
+  }) => void;
 }
 
 export const SFX_NAMES = [

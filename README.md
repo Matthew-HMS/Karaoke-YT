@@ -39,7 +39,9 @@ instantly **seek to any part** of a song.
   uses the curated pool of ~260 famous songs alone.) Signed-in users instead get
   a personalized **"For you"** feed built from their play history + favorites
   (seeds expanded via YouTube's Mix radio, ranked by cross-seed agreement, with
-  songs you already know filtered out). The Player tab's **Related** sub-tab shows
+  your **favorites filtered out** — songs you've only played before can still
+  resurface, since people like singing the same songs again). The Player tab's
+  **Related** sub-tab shows
   songs related to whatever's currently playing. Related/For-you are quota-free
   (yt-dlp); hour-long compilations and live-radio streams are filtered out (real
   songs, ≤10 min) so every pick is a single singable song.
@@ -62,9 +64,39 @@ instantly **seek to any part** of a song.
   newest-added or your own play count; "Recent" is each room's own play history.
   Guests can use everything without an account.
 - 🎲 **Random favorite** — one tap to queue a random song you've starred.
-- 🎉 **Reactions** — a button reveals sound effects (applause, whistle, airhorn,
-  ta-da, drumroll, sad-trombone) that play one-at-a-time on the TV (real `.mp3`
-  clips in `public/sfx/`, with an in-browser synth fallback).
+- 🎉 **Sing & Reactions menu** — one floating button on the phone opens a panel
+  with both **Sing** (set your name + start mic scoring) and **Reactions** —
+  sound effects (applause, whistle, airhorn, ta-da, drumroll, sad-trombone) that
+  play one-at-a-time on the TV (real `.mp3` clips in `public/sfx/`, with an
+  in-browser synth fallback). Closing the panel never stops an in-progress take
+  (the mic lives in a page-level hook); the button keeps showing your live note.
+  The same menu has a **🎡 Random singer** wheel: an editable name list (seeded
+  from whoever's queued songs) that, on a tap from any phone, **spins on the TV**
+  for the whole room to watch and lands on one name (the phone picks the winner +
+  spin and broadcasts it to the host), with a drumroll → applause.
+- 🎯 **Pitch & score** — set a name and tap **🎤 Sing** (in the menu above) to
+  share the phone's mic; the browser detects your pitch (McLeod Pitch Method,
+  `lib/pitch.ts`) and streams it to the TV, which paints a scrolling **pitch
+  ribbon** over the video and a live **score** labelled with the singer's name
+  (works for guests — the name is the persisted `singer-name`, no sign-in
+  needed). When several phones sing, a live **leaderboard** ranks them by name,
+  and an **end-of-song score card** crowns the winner. Mic stays on the phone;
+  only pitch numbers travel.
+- 🎼 **Reference target line + melody scoring** — because the song plays in a
+  cross-origin YouTube iframe whose audio we can't read, the "what note should
+  you hit" line is generated server-side: when a song is queued,
+  `lib/reference.ts` pipes `yt-dlp → ffmpeg → lib/pitch.ts` to scan the audio
+  into a compact pitch contour (cached in SQLite, ~10–25 s/song, hidden behind
+  the queue, reused forever). The TV draws it as a blue **Target** lane scrolling
+  in song-time. **When a contour is ready the score becomes a melody match** —
+  the trace turns green only when you hit the *right* note (octave-folded, so any
+  octave counts), red when you're on a wrong note even if it's in tune, and the
+  score rewards tracking the tune (`🎯 melody match`). With no contour yet it
+  falls back per-sample to self-scoring (steadiness + in-tune-ness, `🎵 in tune`).
+  Color and score both read the note drawn directly under your dot, so green
+  always means "on the blue line." Requires `ffmpeg` on PATH (already in the Docker image).
+  Monophonic detection on a full mix is noisy on dense arrangements — best on
+  vocal-forward songs.
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
 
 ## Architecture

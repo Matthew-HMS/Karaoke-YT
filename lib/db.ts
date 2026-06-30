@@ -255,4 +255,54 @@ export function clearRejectedLyrics(videoId: string): void {
   clearRejectedLyricsStmt.run(videoId);
 }
 
+// ---- Reference pitch contour cache (Tier 3 karaoke target line) ----
+// One row per video: the song's own pitch line, generated once (yt-dlp+ffmpeg →
+// pitch detection, see lib/reference.ts) and reused forever. Stored as a bare
+// midi array (t is derivable from the index and fps) to keep it compact.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reference_pitch (
+    videoId   TEXT PRIMARY KEY,
+    fps       INTEGER NOT NULL,
+    data      TEXT NOT NULL,
+    createdAt INTEGER NOT NULL
+  );
+`);
+
+const getContourStmt = db.prepare(
+  `SELECT fps, data FROM reference_pitch WHERE videoId = ?`
+);
+
+export function getCachedContour(
+  videoId: string
+): { fps: number; midis: number[] } | null {
+  const row = getContourStmt.get(videoId) as
+    | { fps: number; data: string }
+    | undefined;
+  if (!row) return null;
+  return { fps: row.fps, midis: JSON.parse(row.data) as number[] };
+}
+
+const putContourStmt = db.prepare(
+  `INSERT INTO reference_pitch (videoId, fps, data, createdAt)
+   VALUES (@videoId, @fps, @data, @createdAt)
+   ON CONFLICT(videoId) DO UPDATE SET
+     fps = @fps, data = @data, createdAt = @createdAt`
+);
+
+export function putCachedContour(
+  videoId: string,
+  fps: number,
+  midis: number[]
+): void {
+  putContourStmt.run({
+    videoId,
+    fps,
+    // -1 stays -1 (unvoiced); voiced values keep 2 decimals to shrink the blob.
+    data: JSON.stringify(
+      midis.map((m) => (m < 0 ? -1 : Math.round(m * 100) / 100))
+    ),
+    createdAt: Date.now(),
+  });
+}
+
 export default db;

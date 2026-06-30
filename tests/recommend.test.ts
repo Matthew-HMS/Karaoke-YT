@@ -146,21 +146,21 @@ describe("getTrending", () => {
 });
 
 describe("getRecommendations", () => {
-  it("ranks by cross-seed agreement and excludes known songs", async () => {
+  it("ranks by cross-seed agreement, excludes favorites but keeps played songs", async () => {
     mocks.listTopPlayed.mockReturnValue(["s1"]);
     mocks.listFavorites.mockReturnValue([
       { videoId: "s2", title: "Seed 2", thumbnail: "", durationSec: 0 },
     ]);
-    mocks.getKnownVideoIds.mockReturnValue(new Set(["s1", "s2", "known"]));
     mocks.getRelatedViaYtDlp.mockImplementation(async (id: string) =>
       id === "s1"
-        ? [song("x"), song("known")] // "known" must be filtered out
+        ? [song("x"), song("played"), song("s2")] // "s2" is a favorite → dropped; "played" stays
         : [song("x"), song("y")] // "x" surfaces from both seeds → ranked first
     );
 
     const { getRecommendations } = await load();
     const res = await getRecommendations("user");
-    expect(res.map((r) => r.videoId)).toEqual(["x", "y"]);
+    // x (2 seeds) first; played + y each from one seed; favorite s2 excluded.
+    expect(res.map((r) => r.videoId)).toEqual(["x", "played", "y"]);
   });
 
   it("returns trending when the user has no history", async () => {

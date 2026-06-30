@@ -19,19 +19,26 @@ import {
   RecentTab,
   RoomMissing,
   SearchTab,
-  SFX_BUTTONS,
   SignInPrompt,
   TAB_LABELS,
   type Tab,
 } from "@/components/SongTabs";
+import { ControlsMenu } from "@/components/ControlsMenu";
+import { PitchRibbon } from "@/components/PitchRibbon";
+import { ScoreCard } from "@/components/ScoreCard";
+import { SpinnerWheel } from "@/components/SpinnerWheel";
 import { PlayerHandle, YouTubePlayer } from "@/components/YouTubePlayer";
+import type { SingerScore } from "@/lib/pitch";
 import { formatTime } from "@/lib/format";
 import { playSfx, unlockAudio } from "@/lib/sfx";
 import { getSocket } from "@/lib/socket";
 import type { SfxName } from "@/lib/types";
+import { useMicPitch } from "@/lib/useMicPitch";
+import { useReferenceContour } from "@/lib/useReferenceContour";
 import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
 import { useWakeLock } from "@/lib/useWakeLock";
+import { usePrefetchLyrics } from "@/lib/usePrefetchLyrics";
 
 // Safari still exposes fullscreen only under webkit-prefixed names.
 type FsDocument = Document & {
@@ -113,6 +120,11 @@ export default function HostPage() {
     sendSfx,
     reportState,
     notifyEnded,
+    reportPitch,
+    showTarget,
+    setShowTarget,
+    wheelSpin,
+    spinWheel,
   } = useRoom(code, "host", {
     password,
     create: isCreator,
@@ -126,17 +138,31 @@ export default function HostPage() {
 
   // Favorites (★), add-to-queue + "added" toast — shared with remote. The singer
   // name is applied automatically (Google name when signed in, else "Guest").
-  const { starred, favorite, add, addMany, toast } = useSongLibrary({
-    addSong,
-    signedIn,
-    sessionName: session?.user?.name,
-  });
+  const { name, saveName, starred, favorite, add, addMany, toast } =
+    useSongLibrary({
+      addSong,
+      signedIn,
+      sessionName: session?.user?.name,
+    });
 
   const [tab, setTab] = useState<Tab>("search");
-  const [showReactions, setShowReactions] = useState(false);
   const playerRef = useRef<PlayerHandle>(null);
+
+  // The host can be a phone too, so it gets the same mic-pitch capture as a
+  // remote (page-level so closing the menu doesn't stop a take).
+  const mic = useMicPitch({ singer: name.trim() || "Guest", onSample: reportPitch });
   const [joinUrl, setJoinUrl] = useState("");
   const [blockedId, setBlockedId] = useState<string | null>(null);
+  // End-of-song score card: the PitchRibbon hands up the final per-singer
+  // ranking when a song ends, and we show it for a few seconds. A timer ref
+  // lets a quick next-song dismiss the previous card cleanly.
+  const [scoreCard, setScoreCard] = useState<SingerScore[] | null>(null);
+  const scoreCardTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const showScoreCard = (results: SingerScore[]) => {
+    setScoreCard(results);
+    clearTimeout(scoreCardTimer.current);
+    scoreCardTimer.current = setTimeout(() => setScoreCard(null), 8000);
+  };
   // TV volume (0–100), local to this screen. Persisted so a reload keeps it.
   const [volume, setVolume] = useState(100);
   // Mirror of `volume` for the [] -dep unlock effect (reads the latest value
@@ -199,10 +225,43 @@ export default function HostPage() {
   const nowPlaying = state?.nowPlaying ?? null;
   const queue = state?.queue ?? [];
 
+  // Seed the random-singer wheel with the people who've queued songs.
+  const queuedSingers = useMemo(() => {
+    const all = [
+      ...(state?.queue ?? []).map((q) => q.singer),
+      ...(state?.nowPlaying ? [state.nowPlaying.singer] : []),
+    ];
+    return [...new Set(all.map((s) => s?.trim()).filter(Boolean))] as string[];
+  }, [state]);
+
+  // Warm the lyrics cache for the current song + next few queued ones, so the
+  // Lyrics tab is instant. The host owns playback and is always open, so its
+  // prefetch fills the shared server cache that remotes read from too.
+  usePrefetchLyrics(nowPlaying, queue);
+
   // Keep the screen awake while a song is playing — a phone-as-host that dims
   // and locks would pause the YouTube embed. Idle (empty queue) lets it sleep.
   useWakeLock(!!nowPlaying);
   const player = livePlayer ?? state?.playerState ?? null;
+
+  // Fetch the song's reference pitch contour (the karaoke target line). Polls
+  // while it's still generating on the server; null until ready for this song.
+  const reference = useReferenceContour(nowPlaying?.videoId);
+
+  // Auto-stop the host's mic when the song ends — one take per song, matching
+  // the remote. Read `mic` via a ref so this only re-runs on a song change.
+  const micRef = useRef(mic);
+  useEffect(() => {
+    micRef.current = mic;
+  });
+  const songId = nowPlaying?.id;
+  const prevSongId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (prevSongId.current !== undefined && prevSongId.current !== songId) {
+      if (micRef.current.active) micRef.current.stop();
+    }
+    prevSongId.current = songId;
+  }, [songId]);
   const progress = useMemo(() => {
     if (!player || !player.durationSec) return 0;
     return Math.min(100, (player.currentTimeSec / player.durationSec) * 100);
@@ -394,6 +453,24 @@ export default function HostPage() {
               <p className="mt-2 text-white/60">Skipping to the next song…</p>
             </div>
           )}
+
+          {/* Live pitch ribbon + per-singer scores from singing remotes. The
+              `key` remounts it per song so scores reset; on unmount it hands the
+              final ranking up for the score card. */}
+          {nowPlaying && (
+            <PitchRibbon
+              key={nowPlaying.id}
+              onFinalize={showScoreCard}
+              referenceMidis={reference?.midis ?? null}
+              referenceFps={reference?.fps ?? 12}
+              showTarget={showTarget}
+              songTimeSec={player?.currentTimeSec ?? 0}
+              playing={player?.status === "playing"}
+            />
+          )}
+
+          {/* End-of-song score card (over the stage, above the ribbon). */}
+          <ScoreCard results={scoreCard} onDismiss={() => setScoreCard(null)} />
         </div>
 
         {/* Now playing bar */}
@@ -632,39 +709,19 @@ export default function HostPage() {
             )}
           </div>
 
-          {/* Reactions — reveals the sound-effect options (play on the TV). */}
-          <div className="absolute bottom-5 right-5 z-30 flex flex-col items-end gap-2">
-            <AnimatePresence>
-              {showReactions && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                  className="flex flex-col gap-1 rounded-2xl border border-white/10 bg-[#1a1a22] p-2 shadow-xl"
-                >
-                  {SFX_BUTTONS.map((b) => (
-                    <button
-                      key={b.name}
-                      type="button"
-                      onClick={() => sendSfx(b.name)}
-                      className="flex items-center gap-2 rounded-xl px-3 py-2 text-left transition active:scale-95 active:bg-white/10"
-                    >
-                      <span className="text-2xl">{b.emoji}</span>
-                      <span className="text-sm font-medium">{b.label}</span>
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-            <button
-              type="button"
-              onClick={() => setShowReactions((v) => !v)}
-              aria-label="Reactions"
-              className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-[#1a1a22] text-2xl shadow-lg shadow-black/40 transition active:scale-95"
-            >
-              {showReactions ? "✕" : "🎉"}
-            </button>
-          </div>
+          {/* Same floating menu as the phone (the host can be a phone too):
+              Sing + Target toggle + Reactions. Anchored to this side panel. */}
+          <ControlsMenu
+            mic={mic}
+            name={name}
+            onNameChange={saveName}
+            showTarget={showTarget}
+            onToggleTarget={() => setShowTarget(!showTarget)}
+            onSfx={sendSfx}
+            onSpin={spinWheel}
+            suggestedNames={queuedSingers}
+            containerClassName="absolute bottom-5 right-5"
+          />
         </aside>
       )}
 
@@ -681,6 +738,14 @@ export default function HostPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Random-singer wheel — full-screen so it shows over the video even in
+          fullscreen. The TV plays the drumroll + applause; phones stay silent. */}
+      <SpinnerWheel
+        spin={wheelSpin}
+        onSpinStart={() => playSfx("drumroll")}
+        onLand={() => playSfx("applause")}
+      />
     </main>
   );
 }

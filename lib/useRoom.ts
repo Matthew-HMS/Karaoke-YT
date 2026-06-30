@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getSocket } from "./socket";
 import {
+  PitchSample,
   PlayerCommand,
   PlayerState,
   QueueItem,
@@ -31,6 +32,17 @@ export function useRoom(
   // the `player:state` event so the scrub bar can track playback live.
   const [livePlayer, setLivePlayer] = useState<PlayerState | null>(null);
   const [connected, setConnected] = useState(false);
+  // Room-wide "show the TV target pitch line" toggle (default on). Synced so
+  // every host + remote agrees.
+  const [showTarget, setShowTargetState] = useState(true);
+  // Latest random-singer wheel spin to animate (null = none). `id` increments
+  // per spin so the wheel re-runs even when the same name/turns repeat.
+  const [wheelSpin, setWheelSpin] = useState<{
+    names: string[];
+    winner: number;
+    turns: number;
+    id: number;
+  } | null>(null);
   // null = not yet resolved; true = joined; "not_found"/"bad_password" = rejected.
   const [joinError, setJoinError] = useState<
     null | "not_found" | "bad_password"
@@ -74,6 +86,15 @@ export function useRoom(
       setLivePlayer(s.playerState);
     });
     socket.on("player:state", (p) => setLivePlayer(p));
+    socket.on("pitch:showTarget", ({ show }) => setShowTargetState(show));
+    socket.on("wheel:spin", ({ names, winner, turns }) =>
+      setWheelSpin((prev) => ({
+        names,
+        winner,
+        turns,
+        id: (prev?.id ?? 0) + 1,
+      }))
+    );
 
     if (socket.connected) join();
 
@@ -82,6 +103,8 @@ export function useRoom(
       socket.off("disconnect");
       socket.off("room:state");
       socket.off("player:state");
+      socket.off("pitch:showTarget");
+      socket.off("wheel:spin");
     };
   }, [code, role, password, create]);
 
@@ -93,6 +116,13 @@ export function useRoom(
     connected,
     joined,
     joinError,
+    showTarget,
+    // Optimistic local flip + broadcast, so the toggling phone feels instant and
+    // every other client converges via the relayed event.
+    setShowTarget: (show: boolean) => {
+      setShowTargetState(show);
+      socket.emit("pitch:showTarget", { code, show });
+    },
     addSong: (item: Omit<QueueItem, "id" | "addedBy">) =>
       socket.emit("queue:add", {
         code,
@@ -112,5 +142,19 @@ export function useRoom(
     notifyEnded: (itemId?: string) =>
       socket.emit("player:ended", { code, itemId }),
     sendSfx: (name: SfxName) => socket.emit("sfx:play", { code, name }),
+    // Stream one mic-pitch sample to the host(s). High-frequency and fire-and-
+    // forget — intentionally not part of room state, so it doesn't re-render.
+    reportPitch: (sample: PitchSample) =>
+      socket.emit("pitch:report", { code, sample }),
+    // The latest spin to animate (synced to every screen), and the trigger.
+    wheelSpin,
+    // Pick a winner + spin amount here and broadcast, so all screens land
+    // identically. No-op for fewer than two names.
+    spinWheel: (names: string[]) => {
+      if (names.length < 2) return;
+      const winner = Math.floor(Math.random() * names.length);
+      const turns = 4 + Math.floor(Math.random() * 3); // 4–6 full spins
+      socket.emit("wheel:spin", { code, names, winner, turns });
+    },
   };
 }
