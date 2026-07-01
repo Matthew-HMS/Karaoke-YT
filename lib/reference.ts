@@ -76,6 +76,24 @@ const inFlight = new Set<string>();
 // didn't generate, and so we back off instead of hammering a failing download.
 const lastFail = new Map<string, { at: number; msg: string }>();
 
+// OFFLOAD MODE. YouTube bot-walls this cluster's datacenter IP, so instead of
+// downloading here we just RECORD which videos need a contour; an external
+// worker on a non-walled IP (a home/school box — see scripts/generate-worker.ts)
+// polls `/api/reference/pending`, generates them, and POSTs them back to
+// `/api/reference`. Enable with REFERENCE_OFFLOAD=1.
+const OFFLOAD = process.env.REFERENCE_OFFLOAD === "1";
+const wanted = new Set<string>();
+
+// Videos that still need a contour (queued/played but not cached), for the
+// worker to pull.
+export function listWanted(): string[] {
+  return [...wanted].filter((id) => !getCachedContour(id));
+}
+// Called by the ingest endpoint once a worker has delivered a contour.
+export function clearWanted(videoId: string): void {
+  wanted.delete(videoId);
+}
+
 // Why a video has no contour yet, for the API + diagnostics. "generating" while
 // in flight; otherwise the last error message (if any) so a failure is visible
 // instead of looking like an endless "pending".
@@ -254,8 +272,15 @@ export function generateContour(
 // Fire-and-forget pre-warm: generate + cache a video's contour unless it's
 // already cached or mid-generation. Safe to call on every queue add.
 export function ensureContour(videoId: string): void {
-  if (!videoId || inFlight.has(videoId)) return;
+  if (!videoId) return;
   if (getCachedContour(videoId)) return;
+  if (OFFLOAD) {
+    // Don't download on the bot-walled cluster — just record that this video
+    // needs a contour; the external worker will pull it and POST the result.
+    wanted.add(videoId);
+    return;
+  }
+  if (inFlight.has(videoId)) return;
   // Back off after a recent failure so a polling client can't trigger a heavy
   // download attempt every few seconds while something is genuinely broken.
   const f = lastFail.get(videoId);

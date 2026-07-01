@@ -9,23 +9,18 @@ data:
   NODE_ENV: "production"
   DB_PATH: "/data/singalong.db"
   YTDLP_PATH: "/usr/local/bin/yt-dlp"
-  # AUDIO DOWNLOAD for the karaoke target-pitch line. The datacenter IP is bot-
-  # walled ("Sign in to confirm you're not a bot"), which no player_client got
-  # past — so we authenticate with cookies from the mounted `youtube-cookies`
-  # Secret (see deployment.yaml). Cookies work best with yt-dlp's DEFAULT web
-  # client, so EXTRACTOR_ARGS is left empty. If cookies expire the bot-wall
-  # returns and `/api/reference?videoId=…` shows it again — re-export cookies.
+  # OFFLOAD the karaoke target-pitch generation. This cluster's datacenter IP is
+  # bot-walled by YouTube (cookies/proxy tricks are fragile), so we DON'T download
+  # here. With REFERENCE_OFFLOAD=1 the app just records which videos need a
+  # contour (GET /api/reference/pending); an external worker on a non-walled IP
+  # (scripts/generate-worker.ts, e.g. on a school/home box) generates them and
+  # POSTs them back to /api/reference. REFERENCE_INGEST_TOKEN (in the Secret)
+  # authenticates that worker. Set to "0"/unset to generate on the cluster again.
+  REFERENCE_OFFLOAD: "1"
+  # The YTDLP_* settings below only matter when NOT offloading (they tune the
+  # cluster's own yt-dlp). Kept for the fallback path.
   YTDLP_COOKIES: "/secrets/yt/cookies.txt"
-  # Client whose stream URLs actually DOWNLOAD from this IP without a 403. The
-  # default client's media fetch is refused (googlevideo 403 / PO-token gated);
-  # `tv` (also `mweb`, `web_safari`) download fine with the cookies. If `tv`
-  # starts 403ing later, swap to `mweb` — config-only, just rollout restart.
   YTDLP_EXTRACTOR_ARGS: "youtube:player_client=tv"
-  # Optional proxy for yt-dlp's download. Account cookies from a datacenter IP get
-  # rotated/invalidated fast; routing through a RESIDENTIAL/mobile proxy is the
-  # durable fix (YouTube trusts the IP, no cookie upkeep). e.g.
-  #   YTDLP_PROXY: "http://user:pass@residential-proxy.example:8080"
-  # Empty = direct connection.
   YTDLP_PROXY: ""
   # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
   # redirects). Replace EXAMPLE everywhere before applying.

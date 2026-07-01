@@ -34,8 +34,13 @@ kubectl -n karaoke create secret generic singalong-secrets \
   --from-literal=AUTH_SECRET='...' \
   --from-literal=AUTH_GOOGLE_ID='...' \
   --from-literal=AUTH_GOOGLE_SECRET='...' \
-  --from-literal=YOUTUBE_API_KEY='...'
+  --from-literal=YOUTUBE_API_KEY='...' \
+  --from-literal=REFERENCE_INGEST_TOKEN="$(openssl rand -hex 24)"
 ```
+
+> `REFERENCE_INGEST_TOKEN` authenticates the off-cluster target-pitch worker (see
+> "Off-cluster target-pitch worker" below). Generate a random one and give the
+> **same** value to the worker.
 
 ### 3. GHCR image pull
 
@@ -124,7 +129,63 @@ nginx is untouched by deploys (it points at the stable NodePort).
 
 **Rollback a bad image:** `kubectl -n karaoke set image deployment/singalong app=ghcr.io/<owner>/<repo>:sha-<previous>`.
 
-## YouTube cookies (target-pitch line)
+## Off-cluster target-pitch worker (recommended)
+
+The karaoke **target-pitch line** needs to download song audio, but YouTube
+**bot-walls this cluster's datacenter IP** — cookies/proxy workarounds are
+fragile (a signed-in session gets rotated/killed within a few songs). The durable
+answer: **don't download on the cluster at all.** With `REFERENCE_OFFLOAD: "1"`
+(set in [base/configmap.yaml](base/configmap.yaml)), the app just records which
+videos need a contour and exposes them; a small **worker** on a box with a
+non-walled IP (home / school / uni) generates them and POSTs them back.
+
+**On the cluster:** `REFERENCE_OFFLOAD=1` (configmap) + `REFERENCE_INGEST_TOKEN`
+(secret, above). Endpoints, both `Authorization: Bearer <token>`:
+`GET /api/reference/pending` → `{videoIds}`, `POST /api/reference` `{videoId,fps,midis}`.
+
+**On the worker box** (needs `git`, Node 20+, `ffmpeg`, `yt-dlp`):
+
+```bash
+sudo apt-get update && sudo apt-get install -y ffmpeg
+python3 -m pip install -U yt-dlp   # or the standalone binary on PATH
+git clone https://github.com/<owner>/karaoke-yt.git && cd karaoke-yt
+npm ci
+
+REFERENCE_BASE_URL="https://sho-karaoke.duckdns.org" \
+REFERENCE_INGEST_TOKEN="<same token as the cluster Secret>" \
+npx tsx scripts/generate-worker.ts
+```
+
+It polls every ~15 s, generates each pending contour locally, and pushes it up
+(logs `✓ <videoId> — N frames in Xs`). Leave it running under **systemd** so it
+survives reboots:
+
+```ini
+# /etc/systemd/system/singalong-worker.service
+[Unit]
+Description=SingAlong target-pitch worker
+After=network-online.target
+[Service]
+WorkingDirectory=/home/USER/karaoke-yt
+Environment=REFERENCE_BASE_URL=https://sho-karaoke.duckdns.org
+Environment=REFERENCE_INGEST_TOKEN=REPLACE_WITH_TOKEN
+ExecStart=/usr/bin/npx tsx scripts/generate-worker.ts
+Restart=always
+RestartSec=10
+User=USER
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now singalong-worker
+journalctl -u singalong-worker -f    # watch it work
+```
+
+If the worker box's IP is *also* walled, give its yt-dlp cookies too (the same
+`--cookies` trick) — but a residential/campus IP usually isn't. To fall back to
+on-cluster generation, set `REFERENCE_OFFLOAD: "0"` and use the cookies below.
+
+## YouTube cookies (on-cluster fallback)
 
 The karaoke **target-pitch line** downloads song audio server-side (`yt-dlp →
 ffmpeg`, see [`lib/reference.ts`](../lib/reference.ts)). YouTube **bot-walls
