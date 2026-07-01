@@ -95,8 +95,11 @@ function decodePcm(videoId: string): Promise<Float32Array> {
     // NOTE: no --quiet — we WANT yt-dlp's stderr so a download failure (the
     // usual root cause of a downstream "ffmpeg exited 1") is visible.
     const yt = spawn(YTDLP, [
+      // Prefer audio-only, but fall back to the best combined stream if none is
+      // offered (ffmpeg strips the audio out anyway) — avoids "Requested format
+      // is not available" when a client only returns muxed formats.
       "-f",
-      "bestaudio",
+      "bestaudio/best",
       "-o",
       "-",
       "--no-warnings",

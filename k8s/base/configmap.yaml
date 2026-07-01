@@ -16,7 +16,11 @@ data:
   # client, so EXTRACTOR_ARGS is left empty. If cookies expire the bot-wall
   # returns and `/api/reference?videoId=…` shows it again — re-export cookies.
   YTDLP_COOKIES: "/secrets/yt/cookies.txt"
-  YTDLP_EXTRACTOR_ARGS: ""
+  # Client whose stream URLs actually DOWNLOAD from this IP without a 403. The
+  # default client's media fetch is refused (googlevideo 403 / PO-token gated);
+  # `tv` (also `mweb`, `web_safari`) download fine with the cookies. If `tv`
+  # starts 403ing later, swap to `mweb` — config-only, just rollout restart.
+  YTDLP_EXTRACTOR_ARGS: "youtube:player_client=tv"
   # Optional proxy for yt-dlp's download. Account cookies from a datacenter IP get
   # rotated/invalidated fast; routing through a RESIDENTIAL/mobile proxy is the
   # durable fix (YouTube trusts the IP, no cookie upkeep). e.g.
