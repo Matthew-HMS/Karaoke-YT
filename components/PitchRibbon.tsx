@@ -28,6 +28,25 @@ const HUD_INTERVAL_MS = 100; // throttle React HUD updates (canvas stays 60fps)
 
 type Stamped = PitchSample & { t: number };
 
+// Trace a rounded-rectangle path (no dependency on ctx.roundRect for older TVs).
+function roundedRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
 type Props = {
   // Called once when the song ends (this component unmounts), with the final
   // per-singer ranking, so the host can show a score card. Omitted/empty when
@@ -264,67 +283,92 @@ export function PitchRibbon({
         ctx.stroke();
       }
 
-      // Reference "target" lane — the song's own pitch line, drawn behind the
-      // singer's trace in a cool tone so on-pitch singing sits right on top.
-      // Connect consecutive voiced frames; isolated voiced frames (next to a
-      // gap) still get a dot, so a sparse contour doesn't vanish.
+      // Note "block" height, tied to the semitone spacing so a block sits on its
+      // own row. The singer's bar uses the same thickness so it fills a block.
+      const semiPx = h / (hi - lo);
+      const noteH = Math.max(10, Math.min(26, semiPx * 0.82));
+
+      // ---- Target notes: hollow rounded blocks (SingStar style) ----
+      // Group visible reference frames into notes (runs of consecutive frames at
+      // the same semitone) and draw each as a hollow rounded bar. The singer's
+      // voice fills them gold below when on-pitch.
       if (haveRef) {
-        ctx.lineCap = "round";
-        ctx.lineWidth = 7;
-        ctx.strokeStyle = "rgba(130,170,255,0.5)";
-        ctx.fillStyle = "rgba(130,170,255,0.5)";
-        for (let i = refStart; i <= refEnd; i++) {
-          if (ref![i] < 0) continue;
-          const x = xOf(wallOfFrame(i));
-          const y = yOf(ref![i]);
-          if (i > refStart && ref![i - 1] >= 0) {
-            ctx.beginPath();
-            ctx.moveTo(xOf(wallOfFrame(i - 1)), yOf(ref![i - 1]));
-            ctx.lineTo(x, y);
-            ctx.stroke();
-          } else {
-            ctx.beginPath();
-            ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-            ctx.fill();
+        const halfFrameMs = 500 / fps; // half a frame, so adjacent blocks touch
+        for (let i = refStart; i <= refEnd; ) {
+          if (ref![i] < 0) {
+            i++;
+            continue;
           }
+          const sm = Math.round(ref![i]);
+          let j = i;
+          while (
+            j + 1 <= refEnd &&
+            ref![j + 1] >= 0 &&
+            Math.round(ref![j + 1]) === sm
+          ) {
+            j++;
+          }
+          const x0 = xOf(wallOfFrame(i) - halfFrameMs);
+          const x1 = xOf(wallOfFrame(j) + halfFrameMs);
+          roundedRectPath(ctx, x0, yOf(sm) - noteH / 2, Math.max(noteH, x1 - x0), noteH, noteH / 2);
+          ctx.fillStyle = "rgba(255,255,255,0.10)";
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = "rgba(255,255,255,0.55)";
+          ctx.stroke();
+          i = j + 1;
         }
       }
 
-      // The pitch trace: rounded segments colored green→red by in-tune-ness.
+      // ---- Singer's voice: fills the target block gold when matched ----
+      // A thick rounded bar at the sung pitch. With a contour playing we fold the
+      // sung note into the target's octave, so hitting the right pitch class lands
+      // the bar INSIDE the block (filling it); color runs red→gold by how on-note.
       ctx.lineCap = "round";
-      ctx.lineWidth = 8;
+      ctx.lineWidth = noteH;
+      let prevX = 0;
+      let prevY = 0;
+      let prevT = 0;
+      let prevOk = false;
       for (let i = 0; i < samples.length; i++) {
         const s = samples[i];
-        if (s.midi <= 0) continue;
-        const x = xOf(s.t);
-        const y = yOf(s.midi);
-        // Color by quality: against the melody (right note, octave-folded) when
-        // a contour is playing, else self-tune (in-tune-ness). Look up the
-        // target at the SAME song-time the dot is drawn at — the note shown
-        // right under it — so the color matches the blue line you see.
+        if (s.midi <= 0) {
+          prevOk = false;
+          continue;
+        }
         let quality: number;
+        let disp = s.midi;
         if (ref && ref.length && playingRef.current) {
           const sSongT = anchor.songTime + (s.t - anchor.wall) / 1000;
           const tgt = referenceMidiAt(ref, fps, sSongT);
-          quality = tgt >= 0 ? pitchMatchScore(s.midi, tgt) : tuneScore(s.midi);
+          if (tgt >= 0) {
+            disp = s.midi - 12 * Math.round((s.midi - tgt) / 12); // fold to target octave
+            quality = pitchMatchScore(s.midi, tgt);
+          } else {
+            quality = tuneScore(s.midi);
+          }
         } else {
           quality = tuneScore(s.midi);
         }
-        const hue = quality * 120; // 0 red .. 120 green
-        ctx.strokeStyle = `hsla(${hue}, 90%, 55%, ${0.35 + 0.65 * s.clarity})`;
-        const prev = samples[i - 1];
-        if (prev && prev.midi > 0 && s.t - prev.t < 200) {
+        const x = xOf(s.t);
+        const y = yOf(disp);
+        // hue 12 (red) → 50 (gold); brighter/lighter when more on-pitch.
+        ctx.strokeStyle = `hsl(${12 + quality * 38}, 95%, ${46 + 16 * quality}%)`;
+        if (prevOk && s.t - prevT < 200 && Math.abs(y - prevY) < noteH * 2) {
           ctx.beginPath();
-          ctx.moveTo(xOf(prev.t), yOf(prev.midi));
+          ctx.moveTo(prevX, prevY);
           ctx.lineTo(x, y);
           ctx.stroke();
         } else {
-          // Lone point (after a gap): a dot so it's still visible.
           ctx.beginPath();
-          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.arc(x, y, noteH / 2, 0, Math.PI * 2);
           ctx.fillStyle = ctx.strokeStyle;
           ctx.fill();
         }
+        prevX = x;
+        prevY = y;
+        prevT = s.t;
+        prevOk = true;
       }
 
       // "Now" marker down the CENTER — the note playing on screen right now, and
@@ -393,17 +437,17 @@ export function PitchRibbon({
           {/* Legend: what the trace colors mean. */}
           <div className="flex flex-col gap-1 rounded-xl bg-black/50 px-3 py-1.5 text-[10px] font-medium text-white/70 backdrop-blur">
             <span className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-[hsl(120,90%,55%)]" /> On
+              <span className="h-2 w-2 rounded-full bg-[hsl(50,95%,55%)]" /> On
               pitch
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-[hsl(0,90%,55%)]" /> Off
+              <span className="h-2 w-2 rounded-full bg-[hsl(12,95%,50%)]" /> Off
               pitch
             </span>
             {showTarget && referenceMidis && referenceMidis.length > 0 && (
               <span className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-[rgb(130,170,255)]" />{" "}
-                Target
+                <span className="h-2 w-2 rounded-sm border border-white/60" />{" "}
+                Target note
               </span>
             )}
           </div>

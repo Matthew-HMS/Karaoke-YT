@@ -43,7 +43,7 @@ describe("note math", () => {
 
   it("rewards in-tune notes and penalizes pitches between notes", () => {
     expect(tuneScore(69)).toBeCloseTo(1, 5);
-    expect(tuneScore(69.5)).toBeLessThan(0.05); // halfway between = bad
+    expect(tuneScore(69.5)).toBeLessThan(0.3); // halfway between = poor (forgiving curve)
     expect(tuneScore(69.1)).toBeGreaterThan(tuneScore(69.3));
   });
 });
@@ -126,7 +126,11 @@ describe("scoring", () => {
       flat = foldScore(flat, voiced(60.5));
     }
     expect(scoreOutOf100(inTune)).toBeGreaterThan(90);
-    expect(scoreOutOf100(flat)).toBeLessThan(20);
+    // Smeared singing scores clearly lower than in-tune — but the display is
+    // floored into a feel-good band (SCORE_FLOOR..100), so "low" isn't near 0.
+    expect(scoreOutOf100(flat)).toBeLessThan(scoreOutOf100(inTune));
+    expect(scoreOutOf100(flat)).toBeLessThan(75);
+    expect(scoreOutOf100(flat)).toBeGreaterThanOrEqual(60);
   });
 
   it("ranks singers high→low and drops anyone who never sang", () => {
@@ -159,9 +163,11 @@ describe("reference-melody match (Tier 3)", () => {
   it("rewards the right note (any octave) and punishes wrong notes", () => {
     expect(pitchMatchScore(60, 60)).toBeCloseTo(1, 5);
     expect(pitchMatchScore(72, 60)).toBeCloseTo(1, 5); // an octave up still matches
-    expect(pitchMatchScore(60.5, 60)).toBeGreaterThan(0.7); // close enough
-    expect(pitchMatchScore(61, 60)).toBeLessThan(0.4); // a full semitone off
-    expect(pitchMatchScore(62, 60)).toBeLessThan(0.05); // two semitones = miss
+    expect(pitchMatchScore(60.5, 60)).toBeGreaterThan(0.8); // close enough = green
+    // Monotonic falloff — further off scores lower (curve is forgiving on purpose).
+    expect(pitchMatchScore(61, 60)).toBeLessThan(pitchMatchScore(60.5, 60));
+    expect(pitchMatchScore(62, 60)).toBeLessThan(pitchMatchScore(61, 60));
+    expect(pitchMatchScore(62, 60)).toBeLessThan(0.2); // two semitones = clear miss
   });
 
   it("scores a singer who tracks the melody far above one who holds a steady wrong note", () => {

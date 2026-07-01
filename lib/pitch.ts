@@ -39,11 +39,13 @@ export function centsFromNearestSemitone(midi: number): number {
   return (midi - Math.round(midi)) * 100;
 }
 
-// Per-sample "in-tune-ness" in 0..1: a Gaussian that rewards sitting within
-// ~25 cents of a real note and falls off for pitches smeared between notes.
+// Per-sample "in-tune-ness" in 0..1: a Gaussian that rewards sitting near a real
+// note and falls off for pitches smeared between notes. Fairly forgiving (~40
+// cents to still score well) — phone-mic pitch on a noisy room is jittery, and a
+// punishing curve makes it near-impossible to ever see green.
 export function tuneScore(midi: number): number {
   const cents = centsFromNearestSemitone(midi);
-  return Math.exp(-((cents / 25) ** 2));
+  return Math.exp(-((cents / 40) ** 2));
 }
 
 // ---- Reference-melody match (Tier 3 "Milestone B") ----
@@ -62,12 +64,13 @@ export function octaveFoldedDelta(midi: number, target: number): number {
 }
 
 // Per-sample match to a reference note in 0..1: a Gaussian on the octave-folded
-// distance. Dead-on = 1.0, ~½ semitone off ≈ 0.78, a full (wrong) semitone ≈
-// 0.37, ≥2 semitones ≈ 0. Wider than tuneScore (which works in cents) because
-// "the right note" is a coarser target than "perfectly in tune".
+// distance. Forgiving on purpose (σ≈1.4 semitones): dead-on = 1.0, ~½ semitone
+// off ≈ 0.88, a full semitone ≈ 0.60, ~2 semitones ≈ 0.13. Loose enough that a
+// singer who's roughly on the melody (allowing for mic jitter + A/V lag) lights
+// up green, but a clearly wrong note still tanks.
 export function pitchMatchScore(midi: number, target: number): number {
   const semis = octaveFoldedDelta(midi, target);
-  return Math.exp(-(semis * semis));
+  return Math.exp(-((semis / 1.4) ** 2));
 }
 
 // Autocorrelation pitch detector. `buf` is a window of time-domain samples in
@@ -200,8 +203,11 @@ export const emptyScore: ScoreState = { sum: 0, voiced: 0 };
 
 export function foldScore(state: ScoreState, sample: PitchSample): ScoreState {
   if (sample.midi < 0 || sample.clarity < 0.3) return state; // skip unvoiced
+  // Clarity is only a GATE (above), not a multiplier — don't dock points for
+  // singing softly/breathily when the pitch is right; that just made every score
+  // feel low.
   return {
-    sum: state.sum + tuneScore(sample.midi) * sample.clarity,
+    sum: state.sum + tuneScore(sample.midi),
     voiced: state.voiced + 1,
   };
 }
@@ -218,20 +224,26 @@ export function foldScoreVsRef(
   targetMidi: number
 ): ScoreState {
   if (sample.midi < 0 || sample.clarity < 0.3) return state; // skip unvoiced
+  // Clarity gates but doesn't multiply (see foldScore).
   const per =
     targetMidi >= 0
       ? pitchMatchScore(sample.midi, targetMidi)
       : tuneScore(sample.midi);
   return {
-    sum: state.sum + per * sample.clarity,
+    sum: state.sum + per,
     voiced: state.voiced + 1,
   };
 }
 
-// 0..100 for display. Returns 0 before anyone has sung a voiced note.
+// Displayed score. Returns 0 before anyone has sung, but once you've actually
+// sung it's mapped into a feel-good SCORE_FLOOR..100 band — karaoke should feel
+// rewarding, and the raw average rarely climbs near 1.0 on a phone mic. The
+// relative ordering (for the leaderboard) is preserved.
+export const SCORE_FLOOR = 60;
 export function scoreOutOf100(state: ScoreState): number {
   if (state.voiced === 0) return 0;
-  return Math.round((state.sum / state.voiced) * 100);
+  const raw = state.sum / state.voiced; // 0..1
+  return Math.round(SCORE_FLOOR + raw * (100 - SCORE_FLOOR));
 }
 
 // One singer's final tally, for the live leaderboard + end-of-song score card.
