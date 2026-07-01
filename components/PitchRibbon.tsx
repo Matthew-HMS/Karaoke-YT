@@ -318,7 +318,7 @@ export function PitchRibbon({
       // ---- Target notes: hollow rounded blocks (SingStar style) ----
       // Group visible reference frames into notes (runs of consecutive frames at
       // the same semitone) and draw each as a hollow rounded bar. The singer's
-      // voice fills them gold below when on-pitch.
+      // voice fills them pink below when on-pitch.
       if (haveRef) {
         const halfFrameMs = 500 / fps; // half a frame, so adjacent blocks touch
         for (let i = refStart; i <= refEnd; ) {
@@ -347,10 +347,10 @@ export function PitchRibbon({
         }
       }
 
-      // ---- Singer's voice: fills the target block gold when matched ----
+      // ---- Singer's voice: fills the target block pink when matched ----
       // A thick rounded bar at the sung pitch. With a contour playing we fold the
       // sung note into the target's octave, so hitting the right pitch class lands
-      // the bar INSIDE the block (filling it); color runs red→gold by how on-note.
+      // the bar INSIDE the block (filling it); color runs violet→pink by how on-note.
       ctx.lineCap = "round";
       ctx.lineWidth = noteH;
       let prevX = 0;
@@ -379,8 +379,10 @@ export function PitchRibbon({
         }
         const x = xOf(s.t);
         const y = yOf(disp);
-        // hue 12 (red) → 50 (gold); brighter/lighter when more on-pitch.
-        ctx.strokeStyle = `hsl(${12 + quality * 38}, 95%, ${46 + 16 * quality}%)`;
+        // On-brand ramp matching the app's fuchsia→pink accent: deep violet
+        // (hue 280) when off-pitch → bright pink (hue 328) when on-pitch, getting
+        // more saturated and lighter as it locks on.
+        ctx.strokeStyle = `hsl(${280 + quality * 48}, ${72 + quality * 20}%, ${52 + quality * 16}%)`;
         if (prevOk && s.t - prevT < 200 && Math.abs(y - prevY) < noteH * 2) {
           ctx.beginPath();
           ctx.moveTo(prevX, prevY);
@@ -427,11 +429,11 @@ export function PitchRibbon({
         <div className="absolute left-4 top-3 flex items-start gap-3">
           <div className="flex flex-col gap-1 rounded-xl bg-black/50 px-3 py-1.5 text-[10px] font-medium text-white/70 backdrop-blur">
             <span className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-[hsl(50,95%,55%)]" /> On
+              <span className="h-2 w-2 rounded-full bg-[hsl(328,92%,68%)]" /> On
               pitch
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-[hsl(12,95%,50%)]" /> Off
+              <span className="h-2 w-2 rounded-full bg-[hsl(280,72%,52%)]" /> Off
               pitch
             </span>
             {showTarget && referenceMidis && referenceMidis.length > 0 && (
