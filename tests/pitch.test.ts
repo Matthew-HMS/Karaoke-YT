@@ -163,7 +163,7 @@ describe("reference-melody match (Tier 3)", () => {
   it("rewards the right note (any octave) and punishes wrong notes", () => {
     expect(pitchMatchScore(60, 60)).toBeCloseTo(1, 5);
     expect(pitchMatchScore(72, 60)).toBeCloseTo(1, 5); // an octave up still matches
-    expect(pitchMatchScore(60.5, 60)).toBeGreaterThan(0.8); // close enough = green
+    expect(pitchMatchScore(60.5, 60)).toBeGreaterThan(0.7); // close enough = green
     // Monotonic falloff — further off scores lower (curve is forgiving on purpose).
     expect(pitchMatchScore(61, 60)).toBeLessThan(pitchMatchScore(60.5, 60));
     expect(pitchMatchScore(62, 60)).toBeLessThan(pitchMatchScore(61, 60));

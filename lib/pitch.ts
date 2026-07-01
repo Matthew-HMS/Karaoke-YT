@@ -64,13 +64,13 @@ export function octaveFoldedDelta(midi: number, target: number): number {
 }
 
 // Per-sample match to a reference note in 0..1: a Gaussian on the octave-folded
-// distance. Forgiving on purpose (σ≈1.4 semitones): dead-on = 1.0, ~½ semitone
-// off ≈ 0.88, a full semitone ≈ 0.60, ~2 semitones ≈ 0.13. Loose enough that a
-// singer who's roughly on the melody (allowing for mic jitter + A/V lag) lights
-// up green, but a clearly wrong note still tanks.
+// distance. σ≈0.95 semitones — forgiving enough for mic jitter + A/V lag, but
+// tight enough that "off" reads as off: dead-on = 1.0, ~½ semitone ≈ 0.76, a
+// full semitone ≈ 0.33, ~2 semitones ≈ 0.01. (Earlier this was σ≈1.4, which was
+// so loose a whole semitone flat still scored 0.60 and lit up gold.)
 export function pitchMatchScore(midi: number, target: number): number {
   const semis = octaveFoldedDelta(midi, target);
-  return Math.exp(-((semis / 1.4) ** 2));
+  return Math.exp(-((semis / 0.95) ** 2));
 }
 
 // Autocorrelation pitch detector. `buf` is a window of time-domain samples in
@@ -192,24 +192,28 @@ export type PitchSample = {
   clarity: number; // 0..1 periodicity confidence (NSDF peak) for color + scoring
 };
 
-// Running performance score. Folded one voiced sample at a time on the host so
-// the meter can update live and we don't need the whole take in memory.
+// Performance score, accumulated one voiced sample at a time as the song plays
+// and read out ONCE at the end (there's no live meter — the score is shown only
+// on the end-of-song card, so it evaluates the whole take). A simple running
+// mean over every voiced sample: `sum` of per-sample scores over `voiced` count.
 export type ScoreState = {
-  sum: number; // accumulated per-sample tune scores (0..1 each)
+  sum: number; // accumulated per-sample scores (0..1 each)
   voiced: number; // number of voiced samples counted
 };
 
 export const emptyScore: ScoreState = { sum: 0, voiced: 0 };
+
+// Fold one per-sample score (0..1) into the running total.
+function accumulate(state: ScoreState, per: number): ScoreState {
+  return { sum: state.sum + per, voiced: state.voiced + 1 };
+}
 
 export function foldScore(state: ScoreState, sample: PitchSample): ScoreState {
   if (sample.midi < 0 || sample.clarity < 0.3) return state; // skip unvoiced
   // Clarity is only a GATE (above), not a multiplier — don't dock points for
   // singing softly/breathily when the pitch is right; that just made every score
   // feel low.
-  return {
-    sum: state.sum + tuneScore(sample.midi),
-    voiced: state.voiced + 1,
-  };
+  return accumulate(state, tuneScore(sample.midi));
 }
 
 // Like foldScore, but scores against the song's reference melody: credit for
@@ -229,15 +233,12 @@ export function foldScoreVsRef(
     targetMidi >= 0
       ? pitchMatchScore(sample.midi, targetMidi)
       : tuneScore(sample.midi);
-  return {
-    sum: state.sum + per,
-    voiced: state.voiced + 1,
-  };
+  return accumulate(state, per);
 }
 
 // Displayed score. Returns 0 before anyone has sung, but once you've actually
 // sung it's mapped into a feel-good SCORE_FLOOR..100 band — karaoke should feel
-// rewarding, and the raw average rarely climbs near 1.0 on a phone mic. The
+// rewarding, and the raw average rarely sits near 1.0 on a phone mic. The
 // relative ordering (for the leaderboard) is preserved.
 export const SCORE_FLOOR = 60;
 export function scoreOutOf100(state: ScoreState): number {

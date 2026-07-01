@@ -124,12 +124,9 @@ export function PitchRibbon({
 
   const [visible, setVisible] = useState(false);
   const [note, setNote] = useState("");
-  // Active singer = whoever sent the most recent sample (the one being drawn).
-  const [activeSinger, setActiveSinger] = useState("");
-  // Live leaderboard, recomputed (throttled) as samples arrive.
-  const [board, setBoard] = useState<SingerScore[]>([]);
-  // One running score per singer, accumulated every sample (the source of truth
-  // for both the live board and the song-end card).
+  // One running score per singer, accumulated every sample. The score itself is
+  // shown ONLY on the end-of-song card (no live meter) — evaluated over the whole
+  // take — but we still track the dominant singer live to label the note readout.
   const scoresRef = useRef<Map<string, ScoreState>>(new Map());
   const lastHudRef = useRef(0);
   // The "featured" singer whose big score is shown. When several people sing at
@@ -196,10 +193,8 @@ export function PitchRibbon({
         }
         if (curCount === 0 || bestCount >= curCount * 1.4) featured = bestSinger;
         featuredRef.current = featured || singer;
-        setActiveSinger(featuredRef.current);
         const fm = lastMidiRef.current.get(featuredRef.current) ?? -1;
         setNote(fm > 0 ? noteName(fm) : "");
-        setBoard(rankScores(scoresRef.current));
       }
     };
     socket.on("pitch:sample", onSample);
@@ -426,47 +421,10 @@ export function PitchRibbon({
     >
       <div className="relative mx-auto h-40 max-w-5xl bg-gradient-to-t from-black/70 to-transparent">
         <canvas ref={canvasRef} className="h-full w-full" />
-        {/* Active singer's score + the live leaderboard. */}
-        <div className="absolute left-4 top-3 flex items-end gap-3">
-          <div className="rounded-xl bg-black/50 px-3 py-1.5 backdrop-blur">
-            <div className="max-w-[160px] truncate text-[10px] font-medium uppercase tracking-wide text-white/50">
-              {activeSinger ? `🎤 ${activeSinger}` : "Score"}
-            </div>
-            <div className="bg-gradient-to-r from-fuchsia-400 to-pink-400 bg-clip-text text-3xl font-black leading-none tabular-nums text-transparent">
-              {board.find((b) => b.singer === activeSinger)?.score ?? 0}
-            </div>
-            {/* What the number means: matching the melody vs. just steady/in-tune. */}
-            <div className="mt-0.5 text-[9px] font-medium uppercase tracking-wide text-white/40">
-              {referenceMidis && referenceMidis.length > 0
-                ? "🎯 melody match"
-                : "🎵 in tune"}
-            </div>
-          </div>
-          {/* Leaderboard — only when more than one person has sung. */}
-          {board.length > 1 && (
-            <div className="rounded-xl bg-black/50 px-3 py-1.5 backdrop-blur">
-              <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-white/50">
-                Leaderboard
-              </div>
-              <ol className="space-y-0.5">
-                {board.slice(0, 4).map((b, i) => (
-                  <li
-                    key={b.singer}
-                    className={`flex items-center justify-between gap-3 text-xs tabular-nums ${
-                      b.singer === activeSinger ? "text-white" : "text-white/60"
-                    }`}
-                  >
-                    <span className="truncate">
-                      {["🥇", "🥈", "🥉"][i] ?? `${i + 1}.`}{" "}
-                      <span className="max-w-[110px] truncate">{b.singer}</span>
-                    </span>
-                    <span className="font-bold">{b.score}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-          {/* Legend: what the trace colors mean. */}
+        {/* No live score — the number is shown only on the end-of-song card, so
+            it reflects the whole take. What stays on screen is the ribbon itself
+            plus a legend for reading the trace colors. */}
+        <div className="absolute left-4 top-3 flex items-start gap-3">
           <div className="flex flex-col gap-1 rounded-xl bg-black/50 px-3 py-1.5 text-[10px] font-medium text-white/70 backdrop-blur">
             <span className="flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-[hsl(50,95%,55%)]" /> On
