@@ -11,7 +11,9 @@
 // tracks the loudest thing, not always the vocal). Good on vocal-forward songs.
 
 import { spawn } from "child_process";
-import { existsSync } from "fs";
+import { copyFileSync, existsSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   contourFrame,
   contourFrameCount,
@@ -38,8 +40,28 @@ const EXTRACTOR_ARGS = process.env.YTDLP_EXTRACTOR_ARGS || "";
 // pass it when the file actually EXISTS, so the app still runs (falling back to
 // no-cookies) if the Secret isn't mounted yet — no startup dependency on it.
 const COOKIES = process.env.YTDLP_COOKIES || "";
-const cookieArgs = (): string[] =>
-  COOKIES && existsSync(COOKIES) ? ["--cookies", COOKIES] : [];
+
+// yt-dlp writes the cookie jar BACK to the --cookies file when it finishes, but
+// the Secret is mounted read-only ("Read-only file system"). So hand yt-dlp a
+// throwaway WRITABLE copy per run and delete it after. Returns the args to add
+// plus a cleanup fn; both are no-ops when no (readable) cookie file is set.
+function prepareCookies(tag: string): { args: string[]; cleanup: () => void } {
+  if (!COOKIES || !existsSync(COOKIES)) return { args: [], cleanup: () => {} };
+  const tmp = join(tmpdir(), `sa-cookies-${tag}-${process.pid}-${Date.now()}.txt`);
+  try {
+    copyFileSync(COOKIES, tmp);
+  } catch {
+    return { args: [], cleanup: () => {} }; // fall back to no cookies
+  }
+  return {
+    args: ["--cookies", tmp],
+    cleanup: () => {
+      try {
+        unlinkSync(tmp);
+      } catch {}
+    },
+  };
+}
 
 // Videos currently being generated, so a second request doesn't start a dup run.
 const inFlight = new Set<string>();
@@ -63,6 +85,9 @@ function videoUrl(videoId: string): string {
 // piped together so nothing touches disk. Resolves the raw samples.
 function decodePcm(videoId: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
+    // A writable copy of the cookies (yt-dlp rewrites the file on exit; the
+    // Secret mount is read-only). Cleaned up when we settle.
+    const cookies = prepareCookies(videoId);
     // NOTE: no --quiet — we WANT yt-dlp's stderr so a download failure (the
     // usual root cause of a downstream "ffmpeg exited 1") is visible.
     const yt = spawn(YTDLP, [
@@ -72,7 +97,7 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       "-",
       "--no-warnings",
       ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
-      ...cookieArgs(),
+      ...cookies.args,
       videoUrl(videoId),
     ]);
     const ff = spawn(FFMPEG, [
@@ -104,6 +129,7 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      cookies.cleanup();
       if (err) {
         try {
           yt.kill("SIGKILL");
