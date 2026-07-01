@@ -9,6 +9,15 @@ data:
   NODE_ENV: "production"
   DB_PATH: "/data/singalong.db"
   YTDLP_PATH: "/usr/local/bin/yt-dlp"
+  # yt-dlp --extractor-args for AUDIO DOWNLOAD (the karaoke target-pitch line).
+  # On datacenter/cloud IPs YouTube often bot-walls the default web client
+  # ("Sign in to confirm you're not a bot" / HTTP 403), which breaks ONLY the
+  # audio-download path — search + embed playback still work. If the target
+  # line won't generate and `/api/reference?videoId=…` reports a 403/bot error,
+  # set this to force a client that usually gets around it, then rollout restart:
+  #   YTDLP_EXTRACTOR_ARGS: "youtube:player_client=android"
+  # Empty = no change to yt-dlp's defaults.
+  YTDLP_EXTRACTOR_ARGS: ""
   # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
   # redirects). Replace EXAMPLE everywhere before applying.
   AUTH_URL: "https://sho-karaoke.duckdns.org"
