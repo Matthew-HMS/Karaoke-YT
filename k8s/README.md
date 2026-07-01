@@ -107,14 +107,58 @@ registered in Google Cloud — just confirm sign-in works after cutover.
 
 ## Continuous deploy
 
-[`.github/workflows/build-image.yml`](../.github/workflows/build-image.yml) builds
-the arm64 image, pushes `ghcr.io/<owner>/<repo>:sha-<commit>` + `:latest`, then
-SSHes to the control-plane node and `kubectl set image` to that immutable tag.
+[`.github/workflows/test-build-deploy.yml`](../.github/workflows/test-build-deploy.yml)
+runs `test → build → deploy`, splitting **code** changes from **k8s manifest**
+changes (via `dorny/paths-filter`):
+
+- **Code change** (app/Dockerfile/deps) → builds the arm64 image, pushes
+  `ghcr.io/<owner>/<repo>:sha-<commit>` + `:latest`, then on the node applies the
+  manifests and `set image` to the immutable `sha-` tag.
+- **Manifest-only change** (e.g. a ConfigMap tweak) → **skips the build**, ships
+  `k8s/` to the node, `kubectl apply -k`, keeps the running image, and
+  `rollout restart` so pods pick up new env. No costly rebuild.
+
 Reuses the existing repo secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PORT`,
 `DEPLOY_SSH_KEY`; the SSH user needs a working `kubectl` (kubeconfig) on the node.
 nginx is untouched by deploys (it points at the stable NodePort).
 
 **Rollback a bad image:** `kubectl -n karaoke set image deployment/singalong app=ghcr.io/<owner>/<repo>:sha-<previous>`.
+
+## YouTube cookies (target-pitch line)
+
+The karaoke **target-pitch line** downloads song audio server-side (`yt-dlp →
+ffmpeg`, see [`lib/reference.ts`](../lib/reference.ts)). YouTube **bot-walls
+datacenter IPs** ("Sign in to confirm you're not a bot"), so the download needs a
+signed-in session via **cookies** — this affects *only* that feature; search and
+embed playback are unaffected. Export a Netscape `cookies.txt` from a browser
+logged into a **throwaway** Google account (e.g. the "Get cookies.txt LOCALLY"
+extension; do it in an incognito window, then close it so the session isn't
+rotated), then:
+
+```bash
+kubectl -n karaoke create secret generic youtube-cookies \
+  --from-file=cookies.txt=./cookies.txt
+```
+
+The Secret is mounted (optionally — the pod starts without it) at `/secrets/yt`
+per [base/deployment.yaml](base/deployment.yaml); `YTDLP_COOKIES` in
+[base/configmap.yaml](base/configmap.yaml) points yt-dlp at it. Verify:
+
+```bash
+curl -s "https://sho-karaoke.duckdns.org/api/reference?videoId=SOME_ID"
+# {"status":"pending"} → {"found":true,...}; a bot-wall error means cookies are
+# missing/expired. Inspect the mount:
+kubectl -n karaoke exec deploy/singalong -- sh -c 'head -1 /secrets/yt/cookies.txt; printenv YTDLP_COOKIES'
+```
+
+**Refresh when they expire** (the bot-wall returns after weeks/months — re-export
+`cookies.txt` first, then):
+
+```bash
+kubectl -n karaoke create secret generic youtube-cookies \
+  --from-file=cookies.txt=./cookies.txt --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n karaoke rollout restart deployment/singalong   # remount the new Secret
+```
 
 ## Backups
 
@@ -153,6 +197,9 @@ kubectl -n karaoke scale deploy/singalong --replicas=1
 - **yt-dlp** self-updates on every pod start; the daily CronJob
   ([base/cronjob-ytdlp.yaml](base/cronjob-ytdlp.yaml)) forces that via a rollout
   restart so search doesn't rot between deploys.
+- **YouTube cookies expire.** When the target-pitch line stops generating with a
+  bot-wall error, re-export `cookies.txt` and refresh the `youtube-cookies` Secret
+  (see "YouTube cookies" above). Everything else keeps working meanwhile.
 - **Storage is node-local.** If the node holding the volume dies, the favorites DB
   is unavailable until it returns. Favorites are the only durable state; rooms are
   ephemeral by design.
