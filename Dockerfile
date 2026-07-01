@@ -33,16 +33,22 @@ ENV NODE_ENV=production \
     YTDLP_PATH=/usr/local/bin/yt-dlp
 
 # python3: yt-dlp's runtime. ffmpeg: decodes downloaded audio to PCM for the
-# pitch-reference contour generator (lib/reference.ts). dumb-init: forwards
-# signals so SIGTERM reaches Node (graceful shutdown). The standalone yt-dlp
-# binary is owned by `node` so the entrypoint can self-update it without root.
+# pitch-reference contour generator (lib/reference.ts). deno: JS runtime recent
+# yt-dlp needs to run YouTube's player JS (nsig/signature) — without it YouTube
+# extraction is deprecated and formats go missing. dumb-init: forwards signals
+# so SIGTERM reaches Node. The standalone yt-dlp binary is owned by `node` so the
+# entrypoint can self-update it without root. NOTE: arch-pinned to arm64 (the
+# only platform CI builds — Oracle Ampere nodes).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 ffmpeg ca-certificates dumb-init curl \
+      python3 ffmpeg ca-certificates dumb-init curl unzip \
   && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
        -o /usr/local/bin/yt-dlp \
   && chmod a+rx /usr/local/bin/yt-dlp \
   && chown node:node /usr/local/bin/yt-dlp \
-  && apt-get purge -y curl && apt-get autoremove -y \
+  && curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-aarch64-unknown-linux-gnu.zip \
+       -o /tmp/deno.zip \
+  && unzip -o /tmp/deno.zip -d /usr/local/bin && chmod a+rx /usr/local/bin/deno && rm /tmp/deno.zip \
+  && apt-get purge -y curl unzip && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
 
 # Whole built app (incl. node_modules with the compiled better-sqlite3 and tsx,

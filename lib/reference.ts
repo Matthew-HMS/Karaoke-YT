@@ -34,6 +34,10 @@ const FAIL_COOLDOWN_MS = 60_000; // after a failure, wait before retrying a vide
 // YTDLP_EXTRACTOR_ARGS="youtube:player_client=android" usually gets around it.
 // Empty by default = no behavior change.
 const EXTRACTOR_ARGS = process.env.YTDLP_EXTRACTOR_ARGS || "";
+// Optional proxy (e.g. a residential/mobile one) for yt-dlp. The durable fix for
+// the datacenter bot-wall: route the download through an IP YouTube trusts, so
+// it doesn't depend on constantly-rotating account cookies. Empty = direct.
+const PROXY = process.env.YTDLP_PROXY || "";
 // Optional path to a Netscape cookies.txt (mounted from a k8s Secret). This is
 // the reliable fix when the IP is fully bot-walled and no player_client slips
 // past unauthenticated — yt-dlp then downloads as a signed-in session. We only
@@ -97,6 +101,7 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       "-",
       "--no-warnings",
       ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
+      ...(PROXY ? ["--proxy", PROXY] : []),
       ...cookies.args,
       videoUrl(videoId),
     ]);

@@ -17,6 +17,12 @@ data:
   # returns and `/api/reference?videoId=…` shows it again — re-export cookies.
   YTDLP_COOKIES: "/secrets/yt/cookies.txt"
   YTDLP_EXTRACTOR_ARGS: ""
+  # Optional proxy for yt-dlp's download. Account cookies from a datacenter IP get
+  # rotated/invalidated fast; routing through a RESIDENTIAL/mobile proxy is the
+  # durable fix (YouTube trusts the IP, no cookie upkeep). e.g.
+  #   YTDLP_PROXY: "http://user:pass@residential-proxy.example:8080"
+  # Empty = direct connection.
+  YTDLP_PROXY: ""
   # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
   # redirects). Replace EXAMPLE everywhere before applying.
   AUTH_URL: "https://sho-karaoke.duckdns.org"
