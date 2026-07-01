@@ -11,6 +11,7 @@
 // tracks the loudest thing, not always the vocal). Good on vocal-forward songs.
 
 import { spawn } from "child_process";
+import { existsSync } from "fs";
 import {
   contourFrame,
   contourFrameCount,
@@ -31,6 +32,14 @@ const FAIL_COOLDOWN_MS = 60_000; // after a failure, wait before retrying a vide
 // YTDLP_EXTRACTOR_ARGS="youtube:player_client=android" usually gets around it.
 // Empty by default = no behavior change.
 const EXTRACTOR_ARGS = process.env.YTDLP_EXTRACTOR_ARGS || "";
+// Optional path to a Netscape cookies.txt (mounted from a k8s Secret). This is
+// the reliable fix when the IP is fully bot-walled and no player_client slips
+// past unauthenticated — yt-dlp then downloads as a signed-in session. We only
+// pass it when the file actually EXISTS, so the app still runs (falling back to
+// no-cookies) if the Secret isn't mounted yet — no startup dependency on it.
+const COOKIES = process.env.YTDLP_COOKIES || "";
+const cookieArgs = (): string[] =>
+  COOKIES && existsSync(COOKIES) ? ["--cookies", COOKIES] : [];
 
 // Videos currently being generated, so a second request doesn't start a dup run.
 const inFlight = new Set<string>();
@@ -63,6 +72,7 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       "-",
       "--no-warnings",
       ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
+      ...cookieArgs(),
       videoUrl(videoId),
     ]);
     const ff = spawn(FFMPEG, [

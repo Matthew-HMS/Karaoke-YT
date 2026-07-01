@@ -1,11 +1,12 @@
 name: CI / CD
 
 # One pipeline for both CI and CD:
-#   - test  → runs on every pull request AND every push to main
-#   - build → builds the image and pushes to GHCR (main only, needs test)
-#   - deploy→ rolls the new image out to Kubernetes (main only, needs build)
-# So a deploy can only happen after tests pass, and PRs get the same checks
-# without building or deploying anything.
+#   - changes → classifies the push: image-affecting CODE vs. k8s MANIFESTS only
+#   - test    → type-check + unit tests (every PR and every push to main)
+#   - build   → builds the image + pushes to GHCR — ONLY when code changed
+#   - deploy  → applies manifests + rolls out to Kubernetes (main only)
+# A config-only change (e.g. editing a ConfigMap) therefore DEPLOYS without a
+# costly arm64 rebuild: only real code/Dockerfile/deps changes rebuild the image.
 
 on:
   push:
@@ -17,6 +18,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  # What kind of change is this? `code` = anything baked into the image (app
+  # source, Dockerfile, deps, entrypoint). `manifests` = k8s/** only. These gate
+  # whether we rebuild the image and/or just re-apply config.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      manifests: ${{ steps.filter.outputs.manifests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!k8s/**'
+              - '!.github/**'
+              - '!**.md'
+              - '!deploy/**'
+            manifests:
+              - 'k8s/**'
+
   # CI gate — type-check + unit tests. Runs for PRs and for main pushes.
   test:
     runs-on: ubuntu-latest
@@ -37,9 +61,10 @@ jobs:
         continue-on-error: true
 
   build:
-    # Only build/push on main (or a manual run); never for pull requests.
-    if: github.event_name != 'pull_request'
-    needs: test
+    # Build/push ONLY when image-affecting code changed (skip for manifest- or
+    # docs-only pushes), on main or a manual run — never for pull requests.
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.code == 'true' }}
     # Native arm64 runner (free for public repos) — no QEMU emulation, so the
     # better-sqlite3 native compile + `next build` run at full speed (~minutes
     # instead of ~20). Matches the cluster's arm64 nodes.
@@ -82,11 +107,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Roll the new image out to the cluster. The kube-apiserver is on a private IP,
-  # so we SSH to the control-plane node (same access model as deploy.yml) and let
-  # kubectl there pin the Deployment to this commit's immutable image tag.
+  # Roll out to the cluster. The kube-apiserver is on a private IP, so we ship the
+  # manifests to the control-plane node and run kubectl there. Runs when CODE was
+  # rebuilt OR when only MANIFESTS changed — `always()` keeps a skipped `build`
+  # (the config-only path) from skipping the deploy too.
   deploy:
-    needs: build
+    needs: [changes, test, build]
+    if: ${{ always() && github.event_name != 'pull_request' && needs.test.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && (needs.changes.outputs.code == 'true' || needs.changes.outputs.manifests == 'true') }}
     runs-on: ubuntu-latest
     # Never let two deploys race the rollout; let an in-flight one finish. Scoped
     # to this job so PR test runs aren't serialized behind a deploy.
@@ -94,7 +121,22 @@ jobs:
       group: k8s-deploy
       cancel-in-progress: false
     steps:
-      - name: Roll out to Kubernetes
+      - uses: actions/checkout@v4
+
+      # The node needs the manifest files to `kubectl apply -k`, so copy the k8s/
+      # tree over (same SSH credentials as the rollout step below).
+      - name: Copy k8s manifests to the node
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          source: "k8s"
+          target: "Karaoke-YT"
+          overwrite: true
+
+      - name: Apply manifests + roll out
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -104,6 +146,29 @@ jobs:
           script: |
             set -e
             REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-            kubectl -n karaoke set image deployment/singalong \
-              app=ghcr.io/${REPO}:sha-${{ github.sha }}
-            kubectl -n karaoke rollout status deployment/singalong --timeout=180s
+            NS=karaoke
+            DIR=~/Karaoke-YT/k8s/base
+            CODE="${{ needs.changes.outputs.code }}"
+
+            # What's running now — so a config-only apply keeps the SAME immutable
+            # image (the manifest hardcodes :latest; we don't want to silently
+            # move off the sha pin just because config changed).
+            CURRENT=$(kubectl -n $NS get deploy singalong \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+
+            # Apply everything (ConfigMap, Service, Deployment, …) so any config
+            # change lands. This is what makes a config-only deploy work.
+            kubectl -n $NS apply -k "$DIR"
+
+            if [ "$CODE" = "true" ]; then
+              # Code changed → a fresh image was built for this commit; pin it.
+              kubectl -n $NS set image deployment/singalong \
+                app=ghcr.io/${REPO}:sha-${{ github.sha }}
+            else
+              # Config only → keep the running image, then restart so pods pick up
+              # the new ConfigMap env (env changes don't restart pods on their own).
+              [ -n "$CURRENT" ] && kubectl -n $NS set image deployment/singalong app="$CURRENT"
+              kubectl -n $NS rollout restart deployment/singalong
+            fi
+
+            kubectl -n $NS rollout status deployment/singalong --timeout=180s

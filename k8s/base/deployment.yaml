@@ -49,6 +49,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            # YouTube cookies for yt-dlp audio download (target-pitch line). The
+            # datacenter IP is bot-walled, so downloads need a signed-in session.
+            - name: yt-cookies
+              mountPath: /secrets/yt
+              readOnly: true
           # Startup can include `yt-dlp -U` + Next.js warmup, so gate liveness
           # behind a generous startupProbe, then check health steadily.
           startupProbe:
@@ -93,3 +98,11 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: singalong-data
+        # `optional: true` so the pod still starts if the Secret isn't created
+        # yet (the app just runs without cookies until it exists). Create it with:
+        #   kubectl -n karaoke create secret generic youtube-cookies \
+        #     --from-file=cookies.txt=./cookies.txt
+        - name: yt-cookies
+          secret:
+            secretName: youtube-cookies
+            optional: true
