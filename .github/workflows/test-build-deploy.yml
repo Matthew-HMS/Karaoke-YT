@@ -143,6 +143,9 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT }}
+          # Default command_timeout is 10m; the rollout below waits up to 10m on a
+          # cold image pull, so give the SSH command headroom above that.
+          command_timeout: 20m
           script: |
             set -e
             REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
@@ -171,4 +174,9 @@ jobs:
               kubectl -n $NS rollout restart deployment/singalong
             fi
 
-            kubectl -n $NS rollout status deployment/singalong --timeout=180s
+            # 10m, not 180s: on a code deploy the node has to pull the fresh
+            # sha-tagged image (large: node+python+ffmpeg+deno+yt-dlp) before the
+            # single Recreate pod can start. That cold pull routinely overran 180s
+            # — the deploy would fail, then succeed on re-run once the image was
+            # cached on the node. A generous window rides out the first pull.
+            kubectl -n $NS rollout status deployment/singalong --timeout=600s
