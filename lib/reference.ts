@@ -11,9 +11,8 @@
 // tracks the loudest thing, not always the vocal). Good on vocal-forward songs.
 
 import { spawn } from "child_process";
-import { copyFileSync, existsSync, unlinkSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { createHash } from "crypto";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import {
   contourFrame,
   contourFrameCount,
@@ -38,33 +37,37 @@ const EXTRACTOR_ARGS = process.env.YTDLP_EXTRACTOR_ARGS || "";
 // the datacenter bot-wall: route the download through an IP YouTube trusts, so
 // it doesn't depend on constantly-rotating account cookies. Empty = direct.
 const PROXY = process.env.YTDLP_PROXY || "";
-// Optional path to a Netscape cookies.txt (mounted from a k8s Secret). This is
-// the reliable fix when the IP is fully bot-walled and no player_client slips
-// past unauthenticated — yt-dlp then downloads as a signed-in session. We only
-// pass it when the file actually EXISTS, so the app still runs (falling back to
-// no-cookies) if the Secret isn't mounted yet — no startup dependency on it.
-const COOKIES = process.env.YTDLP_COOKIES || "";
+// Cookies. `YTDLP_COOKIES` is the read-only Secret mount (a Netscape
+// cookies.txt). yt-dlp ROTATES the session and rewrites the cookie file on every
+// use — and expects that refreshed copy to be reused next time. So we keep a
+// PERSISTENT writable copy on the /data PVC and point yt-dlp at THAT: the Secret
+// seeds it once, then yt-dlp keeps it fresh, so the session survives (replaying
+// the original stale cookies every run is what got us re-bot-walled in minutes).
+// Generation is serialized (see generateContour) so only one process ever
+// writes this file at a time.
+const COOKIES = process.env.YTDLP_COOKIES || ""; // read-only Secret mount
+const COOKIES_STORE = process.env.YTDLP_COOKIES_STORE || "/data/yt-cookies.txt";
 
-// yt-dlp writes the cookie jar BACK to the --cookies file when it finishes, but
-// the Secret is mounted read-only ("Read-only file system"). So hand yt-dlp a
-// throwaway WRITABLE copy per run and delete it after. Returns the args to add
-// plus a cleanup fn; both are no-ops when no (readable) cookie file is set.
-function prepareCookies(tag: string): { args: string[]; cleanup: () => void } {
-  if (!COOKIES || !existsSync(COOKIES)) return { args: [], cleanup: () => {} };
-  const tmp = join(tmpdir(), `sa-cookies-${tag}-${process.pid}-${Date.now()}.txt`);
+function cookieArgs(): string[] {
+  if (!COOKIES || !existsSync(COOKIES)) return [];
   try {
-    copyFileSync(COOKIES, tmp);
+    // Seed the writable store from the Secret on first use, and RE-seed only
+    // when the Secret's CONTENT changes (you re-exported + updated it). We key
+    // off a content hash, not mtime — a Secret mount gets a fresh mtime on every
+    // pod restart, which would otherwise clobber yt-dlp's rotated session with
+    // the original (by-then stale) cookies on each deploy/cron restart.
+    const secret = readFileSync(COOKIES);
+    const hash = createHash("sha256").update(secret).digest("hex");
+    const marker = COOKIES_STORE + ".seed";
+    const seeded = existsSync(marker) ? readFileSync(marker, "utf8").trim() : "";
+    if (!existsSync(COOKIES_STORE) || hash !== seeded) {
+      writeFileSync(COOKIES_STORE, secret);
+      writeFileSync(marker, hash);
+    }
+    return ["--cookies", COOKIES_STORE];
   } catch {
-    return { args: [], cleanup: () => {} }; // fall back to no cookies
+    return []; // couldn't set up the store → run without cookies (visible failure)
   }
-  return {
-    args: ["--cookies", tmp],
-    cleanup: () => {
-      try {
-        unlinkSync(tmp);
-      } catch {}
-    },
-  };
 }
 
 // Videos currently being generated, so a second request doesn't start a dup run.
@@ -89,9 +92,6 @@ function videoUrl(videoId: string): string {
 // piped together so nothing touches disk. Resolves the raw samples.
 function decodePcm(videoId: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
-    // A writable copy of the cookies (yt-dlp rewrites the file on exit; the
-    // Secret mount is read-only). Cleaned up when we settle.
-    const cookies = prepareCookies(videoId);
     // NOTE: no --quiet — we WANT yt-dlp's stderr so a download failure (the
     // usual root cause of a downstream "ffmpeg exited 1") is visible.
     const yt = spawn(YTDLP, [
@@ -105,7 +105,7 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       "--no-warnings",
       ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
       ...(PROXY ? ["--proxy", PROXY] : []),
-      ...cookies.args,
+      ...cookieArgs(),
       videoUrl(videoId),
     ]);
     const ff = spawn(FFMPEG, [
@@ -137,7 +137,6 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      cookies.cleanup();
       if (err) {
         try {
           yt.kill("SIGKILL");
@@ -230,12 +229,26 @@ async function computeContour(pcm: Float32Array): Promise<number[]> {
   return medianSmoothContour(points).map((p) => p.midi);
 }
 
-export async function generateContour(
+// Serialize generation: run one video at a time. Two reasons — (1) the shared
+// rotating cookie store must not be written by two yt-dlp processes at once, and
+// (2) it caps memory to a single decode+PCM in flight (the cluster is tight on
+// RAM). Pre-warming several queued songs just processes them back-to-back.
+let genChain: Promise<unknown> = Promise.resolve();
+
+export function generateContour(
   videoId: string
 ): Promise<{ fps: number; midis: number[] }> {
-  const pcm = await decodePcm(videoId);
-  const midis = await computeContour(pcm);
-  return { fps: FPS, midis };
+  const run = genChain.then(async () => {
+    const pcm = await decodePcm(videoId);
+    const midis = await computeContour(pcm);
+    return { fps: FPS, midis };
+  });
+  // Keep the chain going regardless of this run's outcome.
+  genChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
 // Fire-and-forget pre-warm: generate + cache a video's contour unless it's
