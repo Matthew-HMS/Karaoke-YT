@@ -54,13 +54,14 @@ function videoUrl(videoId: string): string {
 // piped together so nothing touches disk. Resolves the raw samples.
 function decodePcm(videoId: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
+    // NOTE: no --quiet — we WANT yt-dlp's stderr so a download failure (the
+    // usual root cause of a downstream "ffmpeg exited 1") is visible.
     const yt = spawn(YTDLP, [
       "-f",
       "bestaudio",
       "-o",
       "-",
       "--no-warnings",
-      "--quiet",
       ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
       videoUrl(videoId),
     ]);
@@ -80,7 +81,15 @@ function decodePcm(videoId: string): Promise<Float32Array> {
     ]);
 
     const chunks: Buffer[] = [];
+    let bytesOut = 0;
+    let ytErr = "";
+    let ffErr = "";
+    let ffDone = false;
+    let ytDone = false;
+    let ffCode: number | null = null;
+    let ytCode: number | null = null;
     let settled = false;
+
     const finish = (err: Error | null, value?: Float32Array) => {
       if (settled) return;
       settled = true;
@@ -101,31 +110,66 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       () => finish(new Error("reference: generation timed out")),
       GEN_TIMEOUT_MS
     );
+    // The last non-empty line of a captured stderr — the useful part of a
+    // yt-dlp/ffmpeg error (e.g. "Sign in to confirm you're not a bot").
+    const tail = (s: string) =>
+      s.trim().split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
 
-    yt.on("error", (e) => finish(e));
-    ff.on("error", (e) => finish(e));
+    const maybeSettle = () => {
+      if (settled || !ffDone) return;
+      if (ffCode === 0 && bytesOut >= 4) {
+        const buf = Buffer.concat(chunks);
+        // f32le bytes → Float32Array. Copy into a fresh, 4-aligned ArrayBuffer
+        // so the view is valid regardless of Buffer.concat's alignment.
+        const usable = buf.byteLength - (buf.byteLength % 4);
+        const ab = new ArrayBuffer(usable);
+        new Uint8Array(ab).set(buf.subarray(0, usable));
+        finish(null, new Float32Array(ab));
+        return;
+      }
+      // Failure. Wait for yt-dlp to finish too so we can blame the real culprit:
+      // an ffmpeg error here is almost always downstream of yt-dlp yielding no
+      // audio (bot-wall / 403 / unavailable), so surface yt-dlp's message.
+      if (!ytDone) return;
+      if (bytesOut < 4 || (ytCode !== null && ytCode !== 0)) {
+        const why = tail(ytErr);
+        finish(new Error(`reference: yt-dlp download failed${why ? ` — ${why}` : ""}`));
+      } else {
+        const why = tail(ffErr);
+        finish(new Error(`reference: ffmpeg exited ${ffCode}${why ? ` — ${why}` : ""}`));
+      }
+    };
+
+    yt.on("error", (e) =>
+      finish(new Error(`reference: yt-dlp not runnable — ${e.message}`))
+    );
+    ff.on("error", (e) =>
+      finish(new Error(`reference: ffmpeg not runnable — ${e.message}`))
+    );
+    yt.stderr.on("data", (d: Buffer) => {
+      if (ytErr.length < 4000) ytErr += d.toString();
+    });
+    ff.stderr.on("data", (d: Buffer) => {
+      if (ffErr.length < 4000) ffErr += d.toString();
+    });
     // If ffmpeg exits first, yt-dlp's pipe write fails with EPIPE — ignore it.
     yt.stdout.on("error", () => {});
     ff.stdin.on("error", () => {});
     yt.stdout.pipe(ff.stdin);
 
-    ff.stdout.on("data", (d: Buffer) => chunks.push(d));
+    ff.stdout.on("data", (d: Buffer) => {
+      chunks.push(d);
+      bytesOut += d.length;
+    });
+    yt.on("close", (code) => {
+      ytCode = code;
+      ytDone = true;
+      maybeSettle();
+    });
     ff.on("close", (code) => {
-      if (code !== 0) {
-        finish(new Error(`reference: ffmpeg exited ${code}`));
-        return;
-      }
-      const buf = Buffer.concat(chunks);
-      // f32le bytes → Float32Array. Copy into a fresh, 4-aligned ArrayBuffer so
-      // the typed-array view is valid regardless of Buffer.concat's alignment.
-      const usable = buf.byteLength - (buf.byteLength % 4);
-      if (usable < 4) {
-        finish(new Error("reference: empty/too-short audio"));
-        return;
-      }
-      const ab = new ArrayBuffer(usable);
-      new Uint8Array(ab).set(buf.subarray(0, usable));
-      finish(null, new Float32Array(ab));
+      ffCode = code;
+      ffDone = true;
+      maybeSettle();
     });
   });
 }

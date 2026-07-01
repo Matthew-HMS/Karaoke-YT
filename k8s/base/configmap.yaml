@@ -16,8 +16,10 @@ data:
   # line won't generate and `/api/reference?videoId=…` reports a 403/bot error,
   # set this to force a client that usually gets around it, then rollout restart:
   #   YTDLP_EXTRACTOR_ARGS: "youtube:player_client=android"
-  # Empty = no change to yt-dlp's defaults.
-  YTDLP_EXTRACTOR_ARGS: ""
+  # Empty = no change to yt-dlp's defaults. If android still gets blocked, try
+  # "youtube:player_client=ios" / "web_safari" / "tv" (the reliable client
+  # shifts as YouTube changes; the API's error message will tell you).
+  YTDLP_EXTRACTOR_ARGS: "youtube:player_client=android"
   # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
   # redirects). Replace EXAMPLE everywhere before applying.
   AUTH_URL: "https://sho-karaoke.duckdns.org"
