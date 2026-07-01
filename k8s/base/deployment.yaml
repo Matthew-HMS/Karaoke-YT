@@ -32,7 +32,12 @@ spec:
       containers:
         - name: app
           image: ghcr.io/matthew-hms/karaoke-yt:latest
-          imagePullPolicy: IfNotPresent
+          # The image tag is mutable (`:latest`), so IfNotPresent would keep
+          # running a stale cached image after a push — the node never re-pulls
+          # for an unchanged tag name. Always re-pull on (re)start so a deploy
+          # actually ships the new code + image deps (e.g. ffmpeg). For a fully
+          # reproducible deploy, pin an immutable tag (a git SHA) instead.
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 3000

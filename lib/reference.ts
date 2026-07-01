@@ -24,9 +24,27 @@ const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const SAMPLE_RATE = 16000; // plenty for vocal pitch; keeps the PCM small
 const FPS = 12; // contour frames per second (≈83ms hop)
 const GEN_TIMEOUT_MS = 90_000; // pre-processing, not interactive — be generous
+const FAIL_COOLDOWN_MS = 60_000; // after a failure, wait before retrying a video
+// Optional yt-dlp --extractor-args. On datacenter/cloud IPs YouTube often bot-
+// walls the default web client ("Sign in to confirm you're not a bot"), which
+// breaks audio download even when search (metadata) still works. Setting e.g.
+// YTDLP_EXTRACTOR_ARGS="youtube:player_client=android" usually gets around it.
+// Empty by default = no behavior change.
+const EXTRACTOR_ARGS = process.env.YTDLP_EXTRACTOR_ARGS || "";
 
 // Videos currently being generated, so a second request doesn't start a dup run.
 const inFlight = new Set<string>();
+// Last failure per video (message + when), so the API can report WHY the target
+// didn't generate, and so we back off instead of hammering a failing download.
+const lastFail = new Map<string, { at: number; msg: string }>();
+
+// Why a video has no contour yet, for the API + diagnostics. "generating" while
+// in flight; otherwise the last error message (if any) so a failure is visible
+// instead of looking like an endless "pending".
+export function getContourError(videoId: string): string | undefined {
+  if (inFlight.has(videoId)) return undefined; // still working — not an error
+  return lastFail.get(videoId)?.msg;
+}
 
 function videoUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
@@ -43,6 +61,7 @@ function decodePcm(videoId: string): Promise<Float32Array> {
       "-",
       "--no-warnings",
       "--quiet",
+      ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
       videoUrl(videoId),
     ]);
     const ff = spawn(FFMPEG, [
@@ -136,6 +155,11 @@ export async function generateContour(
 export function ensureContour(videoId: string): void {
   if (!videoId || inFlight.has(videoId)) return;
   if (getCachedContour(videoId)) return;
+  // Back off after a recent failure so a polling client can't trigger a heavy
+  // download attempt every few seconds while something is genuinely broken.
+  const f = lastFail.get(videoId);
+  if (f && Date.now() - f.at < FAIL_COOLDOWN_MS) return;
+  lastFail.delete(videoId); // fresh attempt — clear the stale error
   inFlight.add(videoId);
   generateContour(videoId)
     .then(({ fps, midis }) => {
@@ -146,6 +170,7 @@ export function ensureContour(videoId: string): void {
     })
     .catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
+      lastFail.set(videoId, { at: Date.now(), msg });
       console.warn(`> reference contour failed for ${videoId}: ${msg}`);
     })
     .finally(() => inFlight.delete(videoId));
