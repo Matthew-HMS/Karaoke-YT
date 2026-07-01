@@ -155,6 +155,23 @@ function dedupe(songs: SearchResult[]): SearchResult[] {
   return songs.filter((s) => !seen.has(s.videoId) && seen.add(s.videoId));
 }
 
+// Order recommendations by cross-seed agreement (more seeds → higher tier) but
+// shuffle *within* each tier, freshly per call. Strong matches stay near the top
+// as a quality signal, yet the same songs aren't forever pinned in the same slots
+// — so the feed varies between loads instead of always showing the same picks.
+type RankedSong = { song: SearchResult; score: number };
+function tierShuffle(ranked: RankedSong[]): SearchResult[] {
+  const byScore = new Map<number, SearchResult[]>();
+  for (const { song, score } of ranked) {
+    let bucket = byScore.get(score);
+    if (!bucket) byScore.set(score, (bucket = []));
+    bucket.push(song);
+  }
+  return [...byScore.keys()]
+    .sort((a, b) => b - a)
+    .flatMap((s) => shuffle(byScore.get(s)!));
+}
+
 // Heuristic: a Chinese title has Han characters but no Japanese kana / Korean
 // hangul (which distinguishes it from Japanese titles that also use Han/Kanji).
 // Only used to gauge the language of live-chart songs; curated songs are tagged
@@ -191,7 +208,10 @@ type TrendingPool = {
 
 const relatedCache = new Map<string, CacheEntry>();
 let trendingPool: TrendingPool | null = null;
-const recsCache = new Map<string, CacheEntry>();
+// Personalized recs cache the *scored* candidates (not a fixed order) so each
+// call can re-shuffle within score tiers for variety — see tierShuffle.
+type RecsEntry = { at: number; ranked: RankedSong[] };
+const recsCache = new Map<string, RecsEntry>();
 
 // Strip the noise that makes a YouTube title a bad search query: bracketed tags
 // like "(Official Video)" / "[HD]", a trailing "karaoke", and stray punctuation.
@@ -386,13 +406,19 @@ export async function getTrending(): Promise<SearchResult[]> {
 // Personalized recommendations: take the user's most-played + recently
 // favorited songs as seeds, expand each into its related feed, then rank by how
 // many seeds surfaced the same song (cross-seed agreement = stronger signal).
-// Only favorited songs are removed; already-played songs stay eligible so they
-// can resurface. With no history we just return trending.
+// The scored candidates are cached; ordering is re-shuffled within score tiers
+// on every call (tierShuffle) so the feed varies instead of always showing the
+// same picks up top. Only favorited songs are removed; already-played songs stay
+// eligible so they can resurface. With no history we just return trending.
 export async function getRecommendations(
   userId: string
 ): Promise<SearchResult[]> {
   const hit = recsCache.get(userId);
-  if (hit && Date.now() - hit.at < RECS_TTL_MS) return hit.results;
+  if (hit && Date.now() - hit.at < RECS_TTL_MS) {
+    return hit.ranked.length > 0
+      ? tierShuffle(hit.ranked).slice(0, MAX_RECS)
+      : getTrending();
+  }
 
   // Seeds: favor the user's top plays, topped up with recent favorites. The
   // favorites list carries titles so any per-seed search fallback has a query.
@@ -405,9 +431,8 @@ export async function getRecommendations(
   }
 
   if (seedIds.length === 0) {
-    const trending = await getTrending();
-    recsCache.set(userId, { at: Date.now(), results: trending });
-    return trending;
+    recsCache.set(userId, { at: Date.now(), ranked: [] });
+    return getTrending();
   }
 
   const feeds = await Promise.all(
@@ -427,13 +452,15 @@ export async function getRecommendations(
     }
   }
 
-  const results = [...meta.values()]
-    .sort((a, b) => (score.get(b.videoId)! - score.get(a.videoId)!))
-    .slice(0, MAX_RECS);
+  const ranked: RankedSong[] = [...meta.values()].map((song) => ({
+    song,
+    score: score.get(song.videoId)!,
+  }));
+  recsCache.set(userId, { at: Date.now(), ranked });
 
   // If seeds yielded nothing usable (everything filtered out), fall back to
   // trending rather than an empty "For you" list.
-  const final = results.length > 0 ? results : await getTrending();
-  recsCache.set(userId, { at: Date.now(), results: final });
-  return final;
+  return ranked.length > 0
+    ? tierShuffle(ranked).slice(0, MAX_RECS)
+    : getTrending();
 }

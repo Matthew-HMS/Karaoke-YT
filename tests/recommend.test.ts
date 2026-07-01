@@ -159,8 +159,11 @@ describe("getRecommendations", () => {
 
     const { getRecommendations } = await load();
     const res = await getRecommendations("user");
-    // x (2 seeds) first; played + y each from one seed; favorite s2 excluded.
-    expect(res.map((r) => r.videoId)).toEqual(["x", "played", "y"]);
+    // x (surfaced by both seeds) sits in the top tier alone → always first;
+    // played + y share the lower tier (order shuffled); favorite s2 excluded.
+    expect(res[0].videoId).toBe("x");
+    expect(res.slice(1).map((r) => r.videoId).sort()).toEqual(["played", "y"]);
+    expect(res).toHaveLength(3);
   });
 
   it("returns trending when the user has no history", async () => {

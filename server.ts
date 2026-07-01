@@ -22,6 +22,7 @@ import {
 import {
   addToQueue,
   advanceQueue,
+  allQueuedVideoIds,
   createRoom,
   getRoom,
   reapIdleRooms,
@@ -249,6 +250,17 @@ app.prepare().then(() => {
   }, SWEEP_INTERVAL_MS);
   sweepTimer.unref(); // don't keep the process alive just for the sweep
 
+  // Pre-warm the karaoke target-pitch contour for EVERY now-playing/queued song,
+  // not just the one being added — like the lyrics prefetch. `ensureContour`
+  // skips anything already cached or in flight, so this is cheap; in offload
+  // mode it just keeps the "wanted" list (for the external worker) in sync with
+  // the live queues, so upcoming songs are generated ahead of when they play.
+  const PREWARM_INTERVAL_MS = 20_000;
+  const prewarmTimer = setInterval(() => {
+    for (const videoId of allQueuedVideoIds()) ensureContour(videoId);
+  }, PREWARM_INTERVAL_MS);
+  prewarmTimer.unref();
+
   // Kubernetes sends SIGTERM before killing the pod (deploys, scale-down,
   // node drain). Close Socket.IO (disconnecting clients cleanly) and the HTTP
   // server so in-flight requests finish, then exit. A timeout forces exit if
@@ -256,6 +268,7 @@ app.prepare().then(() => {
   const shutdown = (signal: string) => {
     console.log(`> ${signal} received — shutting down`);
     clearInterval(sweepTimer);
+    clearInterval(prewarmTimer);
     io.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 10_000).unref();
   };

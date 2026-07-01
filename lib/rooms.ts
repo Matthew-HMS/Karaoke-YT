@@ -96,6 +96,18 @@ export function getRoom(code: string): Room | undefined {
   return rooms.get(code);
 }
 
+// Every videoId currently now-playing or queued across all rooms, in play order
+// (now-playing first, then each room's queue). Used to pre-warm the karaoke
+// target-pitch contour for upcoming songs so it's ready by the time they play.
+export function allQueuedVideoIds(): string[] {
+  const ids = new Set<string>();
+  for (const room of rooms.values()) {
+    if (room.nowPlaying) ids.add(room.nowPlaying.videoId);
+    for (const item of room.queue) ids.add(item.videoId);
+  }
+  return [...ids];
+}
+
 export function toRoomState(room: Room): RoomState {
   return {
     code: room.code,
