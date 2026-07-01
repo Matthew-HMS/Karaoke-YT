@@ -132,6 +132,11 @@ export function PitchRibbon({
   // for both the live board and the song-end card).
   const scoresRef = useRef<Map<string, ScoreState>>(new Map());
   const lastHudRef = useRef(0);
+  // The "featured" singer whose big score is shown. When several people sing at
+  // once their samples interleave, so we pick the DOMINANT singer over a short
+  // window (with hysteresis) instead of flipping to whoever sent the last sample.
+  const featuredRef = useRef("");
+  const lastMidiRef = useRef<Map<string, number>>(new Map());
 
   // Keep the latest onFinalize without re-subscribing — the finalize fires from
   // the [] effect's unmount cleanup, which would otherwise capture a stale prop.
@@ -151,6 +156,7 @@ export function PitchRibbon({
       samplesRef.current.push({ ...s, t: now });
 
       const singer = s.singer || "Guest";
+      lastMidiRef.current.set(singer, s.midi);
       const prev = scoresRef.current.get(singer) ?? emptyScore;
       // Score against the song's melody at the song-time this sample is drawn
       // at — the same note the ribbon shows under the singer's dot, so the score
@@ -165,8 +171,34 @@ export function PitchRibbon({
 
       if (now - lastHudRef.current >= HUD_INTERVAL_MS) {
         lastHudRef.current = now;
-        setActiveSinger(singer);
-        setNote(s.midi > 0 ? noteName(s.midi) : "");
+        // Dominant singer over the last ~1.5s (voiced samples), so the big score
+        // sticks with whoever's actually carrying the song rather than flickering
+        // between everyone. Only switch when the current one goes quiet or another
+        // clearly takes over (hysteresis), so a duet doesn't strobe.
+        const cutoff = now - 1500;
+        const counts = new Map<string, number>();
+        const samples = samplesRef.current;
+        for (let k = samples.length - 1; k >= 0 && samples[k].t >= cutoff; k--) {
+          if (samples[k].midi > 0) {
+            const sg = samples[k].singer || "Guest";
+            counts.set(sg, (counts.get(sg) ?? 0) + 1);
+          }
+        }
+        let featured = featuredRef.current;
+        const curCount = counts.get(featured) ?? 0;
+        let bestSinger = featured;
+        let bestCount = curCount;
+        for (const [sg, c] of counts) {
+          if (c > bestCount) {
+            bestCount = c;
+            bestSinger = sg;
+          }
+        }
+        if (curCount === 0 || bestCount >= curCount * 1.4) featured = bestSinger;
+        featuredRef.current = featured || singer;
+        setActiveSinger(featuredRef.current);
+        const fm = lastMidiRef.current.get(featuredRef.current) ?? -1;
+        setNote(fm > 0 ? noteName(fm) : "");
         setBoard(rankScores(scoresRef.current));
       }
     };

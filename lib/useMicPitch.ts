@@ -111,6 +111,25 @@ export function useMicPitch(opts: {
     }
   }, [stop]);
 
+  // Recover after the tab was backgrounded. Mobile browsers suspend the
+  // AudioContext (and throttle timers) while a tab is hidden, which silently
+  // stops capture — the browser won't let a background web page keep listening
+  // to the mic. When we return to the foreground, resume the context so the mic
+  // picks back up on its own, instead of the singer having to toggle Sing.
+  useEffect(() => {
+    if (!active) return;
+    const onVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        ctxRef.current?.state === "suspended"
+      ) {
+        void ctxRef.current.resume();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [active]);
+
   // Release the mic when the page using the hook unmounts.
   useEffect(() => stop, [stop]);
 

@@ -305,4 +305,42 @@ export function putCachedContour(
   });
 }
 
+// ---- Pending-contour queue (offload mode) ----
+// Videos that still need a contour, for the off-cluster worker to pull. This
+// MUST live in SQLite, not an in-memory Set: the Socket.IO server (which marks
+// videos on queue:add) and the Next.js API routes (which the worker polls) run
+// as SEPARATE module instances in the custom-server setup, so they don't share
+// in-process state — only the DB file is common ground.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pending_contour (
+    videoId   TEXT PRIMARY KEY,
+    createdAt INTEGER NOT NULL
+  );
+`);
+
+const markPendingStmt = db.prepare(
+  `INSERT OR IGNORE INTO pending_contour (videoId, createdAt) VALUES (?, ?)`
+);
+export function markPendingContour(videoId: string): void {
+  markPendingStmt.run(videoId, Date.now());
+}
+
+// Videos wanting a contour that aren't cached yet, oldest first.
+const listPendingStmt = db.prepare(
+  `SELECT p.videoId AS videoId FROM pending_contour p
+   LEFT JOIN reference_pitch r ON r.videoId = p.videoId
+   WHERE r.videoId IS NULL
+   ORDER BY p.createdAt ASC`
+);
+export function listPendingContours(): string[] {
+  return (listPendingStmt.all() as { videoId: string }[]).map((r) => r.videoId);
+}
+
+const clearPendingStmt = db.prepare(
+  `DELETE FROM pending_contour WHERE videoId = ?`
+);
+export function clearPendingContour(videoId: string): void {
+  clearPendingStmt.run(videoId);
+}
+
 export default db;

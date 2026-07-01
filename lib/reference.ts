@@ -19,7 +19,13 @@ import {
   medianSmoothContour,
   type ContourPoint,
 } from "@/lib/pitch";
-import { getCachedContour, putCachedContour } from "@/lib/db";
+import {
+  clearPendingContour,
+  getCachedContour,
+  listPendingContours,
+  markPendingContour,
+  putCachedContour,
+} from "@/lib/db";
 
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
@@ -82,16 +88,16 @@ const lastFail = new Map<string, { at: number; msg: string }>();
 // polls `/api/reference/pending`, generates them, and POSTs them back to
 // `/api/reference`. Enable with REFERENCE_OFFLOAD=1.
 const OFFLOAD = process.env.REFERENCE_OFFLOAD === "1";
-const wanted = new Set<string>();
 
 // Videos that still need a contour (queued/played but not cached), for the
-// worker to pull.
+// worker to pull. Backed by SQLite (see markPendingContour) because the server
+// and the API routes are separate module instances and only share the DB.
 export function listWanted(): string[] {
-  return [...wanted].filter((id) => !getCachedContour(id));
+  return listPendingContours();
 }
 // Called by the ingest endpoint once a worker has delivered a contour.
 export function clearWanted(videoId: string): void {
-  wanted.delete(videoId);
+  clearPendingContour(videoId);
 }
 
 // Why a video has no contour yet, for the API + diagnostics. "generating" while
@@ -277,7 +283,7 @@ export function ensureContour(videoId: string): void {
   if (OFFLOAD) {
     // Don't download on the bot-walled cluster — just record that this video
     // needs a contour; the external worker will pull it and POST the result.
-    wanted.add(videoId);
+    markPendingContour(videoId);
     return;
   }
   if (inFlight.has(videoId)) return;

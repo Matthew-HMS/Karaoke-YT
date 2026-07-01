@@ -25,6 +25,7 @@ import { ControlsMenu } from "@/components/ControlsMenu";
 import { useMicPitch } from "@/lib/useMicPitch";
 import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
+import { useWakeLock } from "@/lib/useWakeLock";
 
 export default function RemotePage() {
   const code = String(useParams().room || "").toUpperCase();
@@ -84,6 +85,11 @@ export default function RemotePage() {
   // Mic pitch capture lives at the page level (not inside the menu panel) so it
   // keeps running when the panel is closed mid-song.
   const mic = useMicPitch({ singer: name.trim() || "Guest", onSample: reportPitch });
+
+  // Keep the phone screen awake while singing so it doesn't dim/lock mid-song —
+  // a locked screen suspends the page and cuts the mic. (Doesn't help if you
+  // switch to another tab/app; the browser suspends background pages regardless.)
+  useWakeLock(mic.active);
 
   // Auto-stop the mic when the song ends (now-playing changes or the queue
   // empties), so each take is one song — the singer re-arms Sing for the next.
