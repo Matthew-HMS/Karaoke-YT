@@ -12,10 +12,12 @@ const TTL_MS = 10 * 60 * 1000;
 
 export async function searchSongs(
   query: string,
-  opts: { karaokeOnly: boolean; limit: number }
+  opts: { karaokeOnly: boolean; limit: number; region?: string }
 ): Promise<{ results: SearchResult[]; source: SearchSource }> {
-  const { karaokeOnly, limit } = opts;
-  const key = `${karaokeOnly ? 1 : 0}:${limit}:${query.trim().toLowerCase()}`;
+  const { karaokeOnly, limit, region = "" } = opts;
+  // Region is part of the key: a US and a TW viewer must not share a cache entry,
+  // since each backend biases availability to that region.
+  const key = `${region}:${karaokeOnly ? 1 : 0}:${limit}:${query.trim().toLowerCase()}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) {
     return { results: hit.results, source: "cache" };
@@ -24,7 +26,7 @@ export async function searchSongs(
   let results: SearchResult[];
   let source: SearchSource;
   try {
-    results = await searchViaYtDlp(query, { karaokeOnly, limit });
+    results = await searchViaYtDlp(query, { karaokeOnly, limit, region });
     source = "yt-dlp";
   } catch (err) {
     console.warn(
@@ -34,6 +36,7 @@ export async function searchSongs(
     results = await searchYouTube(query, {
       karaokeOnly,
       limit: Math.min(limit, 50),
+      region,
     });
     source = "youtube-api";
   }

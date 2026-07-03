@@ -72,12 +72,15 @@ function runFlat(
 
 export function searchViaYtDlp(
   query: string,
-  opts: { karaokeOnly: boolean; limit: number }
+  opts: { karaokeOnly: boolean; limit: number; region?: string }
 ): Promise<SearchResult[]> {
   const q = opts.karaokeOnly ? `${query} karaoke` : query;
+  // `gl` sets YouTube's content country, so the listing reflects what's
+  // available in the viewer's region rather than the server's.
+  const gl = opts.region ? `&gl=${opts.region}` : "";
   const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(
     q
-  )}&sp=${SP_VIDEO}`;
+  )}&sp=${SP_VIDEO}${gl}`;
   // A little headroom on the timeout for larger result sets.
   return runFlat(url, opts.limit, 10000 + opts.limit * 120);
 }
@@ -95,9 +98,11 @@ export async function getPlaylistViaYtDlp(
 // feed — quota-free via the watch URL. The seed video itself is filtered out.
 export async function getRelatedViaYtDlp(
   videoId: string,
-  limit = 25
+  limit = 25,
+  region?: string
 ): Promise<SearchResult[]> {
-  const url = `https://www.youtube.com/watch?v=${videoId}&list=RD${videoId}`;
+  const gl = region ? `&gl=${region}` : "";
+  const url = `https://www.youtube.com/watch?v=${videoId}&list=RD${videoId}${gl}`;
   const results = await runFlat(url, limit, PLAYLIST_TIMEOUT_MS);
   return results.filter((r) => r.videoId !== videoId);
 }

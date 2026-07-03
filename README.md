@@ -108,6 +108,17 @@ instantly **seek to any part** of a song.
 - **Search:** `lib/ytsearch.ts` shells out to **yt-dlp** (no API quota);
   `lib/search.ts` falls back to the **YouTube Data API** if yt-dlp fails, and
   caches results.
+- **Region-aware discovery:** discovery runs on the server, so by default every
+  feed reflects the *server's* region — which is how a song gets found + queued
+  but then won't play for someone in another country. `lib/region.ts` resolves
+  the viewer's country and the server biases results toward region-playable
+  uploads (yt-dlp `gl=`, Data API `regionCode=`); feeds are cached per region.
+  Region is resolved (`regionFromRequest`) in priority order: an **`X-Country`
+  GeoIP header** from nginx (IP-accurate — what YouTube actually enforces; see
+  `k8s/README.md` §5b), else the client's **language-based** `?region=XX` hint
+  (from `navigator.language`), else none. It only *biases* discovery — a
+  genuinely region-locked video still shows the "Not available in your region"
+  notice on the blocked screen at playback.
 - **Recommendations:** `lib/recommend.ts` orchestrates trending / related /
   personalized feeds (yt-dlp Mix radio + charts search, in-process cached),
   served by `/api/trending`, `/api/related`, and `/api/recommendations`.
@@ -148,7 +159,9 @@ Environment (`.env.local`):
 - Trending (signed-out "Top hits") uses YouTube's **Most Popular** music chart
   via the Data API when `YOUTUBE_API_KEY` is set — quota-cheap (~1 unit/region,
   refreshed hourly). `TRENDING_REGION` (*optional*, default `TW,US,JP`) is a
-  comma-separated list of region codes blended together. Without a key (or if the
+  comma-separated list of region codes blended together — the viewer's own
+  detected region is added to this blend so their playable hits are represented.
+  Without a key (or if the
   chart fails) it falls back to randomly sampling a built-in pool of ~260 famous
   songs. To pin a source instead: `TRENDING_PLAYLIST_ID` — a YouTube playlist id
   (wins if set); or `TRENDING_QUERY` — a single search query. Both *optional*.

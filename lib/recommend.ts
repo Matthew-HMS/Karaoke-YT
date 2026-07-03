@@ -181,11 +181,15 @@ function isChinese(r: SearchResult): boolean {
 }
 
 // Search a random sample of curated song names (top result each) in parallel.
-async function sampleSearch(list: string[], n: number): Promise<SearchResult[]> {
+async function sampleSearch(
+  list: string[],
+  n: number,
+  region = ""
+): Promise<SearchResult[]> {
   const picks = shuffle(list).slice(0, n);
   const settled = await Promise.all(
     picks.map((q) =>
-      searchSongs(q, { karaokeOnly: false, limit: 1 })
+      searchSongs(q, { karaokeOnly: false, limit: 1, region })
         .then((r) => r.results)
         .catch(() => [])
     )
@@ -207,7 +211,10 @@ type TrendingPool = {
 };
 
 const relatedCache = new Map<string, CacheEntry>();
-let trendingPool: TrendingPool | null = null;
+// Trending is cached PER REGION: each viewer's region biases both the live chart
+// and the curated-search uploads toward what's playable where they are, so a US
+// and a TW viewer can't share one pool.
+const trendingPools = new Map<string, TrendingPool>();
 // Personalized recs cache the *scored* candidates (not a fixed order) so each
 // call can re-shuffle within score tiers for variety — see tierShuffle.
 type RecsEntry = { at: number; ranked: RankedSong[] };
@@ -228,14 +235,16 @@ function cleanTitle(title: string): string {
 // 2023, so a search is the only quota-bearing fallback available).
 export async function getRelated(
   videoId: string,
-  title?: string
+  title?: string,
+  region = ""
 ): Promise<SearchResult[]> {
-  const hit = relatedCache.get(videoId);
+  const key = `${region}:${videoId}`;
+  const hit = relatedCache.get(key);
   if (hit && Date.now() - hit.at < RELATED_TTL_MS) return hit.results;
 
   let results: SearchResult[] = [];
   try {
-    results = await getRelatedViaYtDlp(videoId, MAX_RELATED);
+    results = await getRelatedViaYtDlp(videoId, MAX_RELATED, region);
   } catch (err) {
     console.warn(
       "[recommend] related mix failed:",
@@ -248,6 +257,7 @@ export async function getRelated(
       const { results: searched } = await searchSongs(cleanTitle(title), {
         karaokeOnly: false,
         limit: MAX_RELATED,
+        region,
       });
       results = searched.filter((r) => r.videoId !== videoId);
     } catch {
@@ -256,7 +266,7 @@ export async function getRelated(
   }
 
   results = results.filter(singable);
-  relatedCache.set(videoId, { at: Date.now(), results });
+  relatedCache.set(key, { at: Date.now(), results });
   return results;
 }
 
@@ -264,10 +274,7 @@ export async function getRelated(
 // regions (default Taiwan + US + Japan for a Mandarin/English/Japanese mix).
 // Quota-cheap (1 unit/region) and only refreshed hourly, so it barely touches
 // the daily budget. Needs YOUTUBE_API_KEY; empties if it isn't set / fails.
-async function getTrendingFromChart(): Promise<SearchResult[]> {
-  const regions = TRENDING_REGION.split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
+async function getTrendingFromChart(regions: string[]): Promise<SearchResult[]> {
   if (regions.length === 0) return [];
   const settled = await Promise.allSettled(
     regions.map((r) => getMostPopularMusic(r, 20))
@@ -278,7 +285,7 @@ async function getTrendingFromChart(): Promise<SearchResult[]> {
 // Build (hourly) the bucketed trending source: a pinned override, or the live
 // chart + curated songs gathered in parallel. Curated is split CN/other so we
 // can keep the feed Chinese-heavy.
-async function buildTrendingPool(): Promise<TrendingPool> {
+async function buildTrendingPool(region: string): Promise<TrendingPool> {
   const pool: TrendingPool = {
     at: Date.now(),
     override: [],
@@ -299,22 +306,29 @@ async function buildTrendingPool(): Promise<TrendingPool> {
     return pool;
   }
   if (TRENDING_QUERY) {
-    pool.override = await searchSongs(TRENDING_QUERY, { karaokeOnly: false, limit: 30 })
+    pool.override = await searchSongs(TRENDING_QUERY, { karaokeOnly: false, limit: 30, region })
       .then((r) => r.results.filter(singable))
       .catch(() => []);
     return pool;
   }
 
+  // Include the viewer's region in the chart blend (deduped) so their region's
+  // playable hits are represented alongside the configured default mix.
+  const chartRegions = [
+    ...new Set(
+      [region, ...TRENDING_REGION.split(",").map((r) => r.trim())].filter(Boolean)
+    ),
+  ];
   const [chart, curatedCN, curatedOther] = await Promise.all([
-    getTrendingFromChart().catch((err) => {
+    getTrendingFromChart(chartRegions).catch((err) => {
       console.warn(
         "[recommend] trending chart failed:",
         err instanceof Error ? err.message : err
       );
       return [] as SearchResult[];
     }),
-    sampleSearch(CHINESE_HITS, CURATED_CN_PICKS),
-    sampleSearch(CURATED_OTHER, CURATED_OTHER_PICKS),
+    sampleSearch(CHINESE_HITS, CURATED_CN_PICKS, region),
+    sampleSearch(CURATED_OTHER, CURATED_OTHER_PICKS, region),
   ]);
   pool.chart = chart.filter(singable);
   pool.curatedCN = curatedCN;
@@ -396,11 +410,14 @@ function composeTrending(pool: TrendingPool): SearchResult[] {
 // Anonymous "Top hits" feed: ~70% familiar curated songs + ~30% live chart, kept
 // ≥70% Chinese. The bucketed pool is cached hourly; composeTrending re-blends and
 // re-shuffles per call so the tab varies and "Load more" surfaces new songs.
-export async function getTrending(): Promise<SearchResult[]> {
-  if (!trendingPool || Date.now() - trendingPool.at >= TRENDING_TTL_MS) {
-    trendingPool = await buildTrendingPool();
+export async function getTrending(region = ""): Promise<SearchResult[]> {
+  const key = region || "DEFAULT";
+  let pool = trendingPools.get(key);
+  if (!pool || Date.now() - pool.at >= TRENDING_TTL_MS) {
+    pool = await buildTrendingPool(region);
+    trendingPools.set(key, pool);
   }
-  return composeTrending(trendingPool);
+  return composeTrending(pool);
 }
 
 // Personalized recommendations: take the user's most-played + recently
@@ -411,13 +428,15 @@ export async function getTrending(): Promise<SearchResult[]> {
 // same picks up top. Only favorited songs are removed; already-played songs stay
 // eligible so they can resurface. With no history we just return trending.
 export async function getRecommendations(
-  userId: string
+  userId: string,
+  region = ""
 ): Promise<SearchResult[]> {
-  const hit = recsCache.get(userId);
+  const cacheKey = `${region}:${userId}`;
+  const hit = recsCache.get(cacheKey);
   if (hit && Date.now() - hit.at < RECS_TTL_MS) {
     return hit.ranked.length > 0
       ? tierShuffle(hit.ranked).slice(0, MAX_RECS)
-      : getTrending();
+      : getTrending(region);
   }
 
   // Seeds: favor the user's top plays, topped up with recent favorites. The
@@ -431,12 +450,12 @@ export async function getRecommendations(
   }
 
   if (seedIds.length === 0) {
-    recsCache.set(userId, { at: Date.now(), ranked: [] });
-    return getTrending();
+    recsCache.set(cacheKey, { at: Date.now(), ranked: [] });
+    return getTrending(region);
   }
 
   const feeds = await Promise.all(
-    seedIds.map((id) => getRelated(id, titleById.get(id)))
+    seedIds.map((id) => getRelated(id, titleById.get(id), region))
   );
 
   // Only filter out favorites — songs the user has *played* stay eligible so
@@ -456,11 +475,11 @@ export async function getRecommendations(
     song,
     score: score.get(song.videoId)!,
   }));
-  recsCache.set(userId, { at: Date.now(), ranked });
+  recsCache.set(cacheKey, { at: Date.now(), ranked });
 
   // If seeds yielded nothing usable (everything filtered out), fall back to
   // trending rather than an empty "For you" list.
   return ranked.length > 0
     ? tierShuffle(ranked).slice(0, MAX_RECS)
-    : getTrending();
+    : getTrending(region);
 }

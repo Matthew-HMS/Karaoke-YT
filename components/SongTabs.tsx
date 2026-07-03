@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { LyricsPanel } from "@/components/LyricsPanel";
 import { isValidPassword, normalizePassword } from "@/lib/code";
 import { formatTime } from "@/lib/format";
+import { detectRegion } from "@/lib/region";
 import type { PlayerCommand, QueueItem, SfxName } from "@/lib/types";
 
 export type { SearchResult } from "@/lib/youtube";
@@ -159,8 +160,11 @@ export function SearchTab({
     setDiscoverLoading(true);
     setDiscoverDone(false);
     // Recommendations require auth; fall back to trending if signed out or the
-    // session isn't ready yet (401).
-    const url = signedIn ? "/api/recommendations" : "/api/trending";
+    // session isn't ready yet (401). `region` biases the feed to what's playable
+    // where the viewer is.
+    const region = detectRegion();
+    const rq = region ? `?region=${region}` : "";
+    const url = signedIn ? `/api/recommendations${rq}` : `/api/trending${rq}`;
     fetch(url)
       .then((r) => (r.ok ? r.json() : { results: [] }))
       .then((d) => active && setDiscover(d.results ?? []))
@@ -177,7 +181,8 @@ export function SearchTab({
   const loadMoreDiscover = async () => {
     setDiscoverMoreLoading(true);
     try {
-      const res = await fetch("/api/trending");
+      const region = detectRegion();
+      const res = await fetch(`/api/trending${region ? `?region=${region}` : ""}`);
       const data = res.ok ? await res.json() : { results: [] };
       const incoming = (data.results ?? []) as SearchResult[];
       setDiscover((prev) => {
@@ -216,10 +221,11 @@ export function SearchTab({
       else setLoading(true);
       setError(null);
       try {
+        const region = detectRegion();
         const res = await fetch(
           `/api/search?q=${encodeURIComponent(query)}&karaokeOnly=${
             kOnly ? "1" : "0"
-          }&limit=${lim}`
+          }&limit=${lim}${region ? `&region=${region}` : ""}`
         );
         const data = await res.json();
         if (!res.ok) {
@@ -613,6 +619,8 @@ function RelatedTab({
       videoId: nowPlaying.videoId,
       title: nowPlaying.title,
     });
+    const region = detectRegion();
+    if (region) params.set("region", region);
     fetch(`/api/related?${params}`)
       .then((r) => (r.ok ? r.json() : { results: [] }))
       .then((d) => active && setItems(d.results ?? []))

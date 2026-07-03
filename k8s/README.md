@@ -104,6 +104,49 @@ sudo systemctl disable --now singalong         # stop the old app once happy
 **Rollback (seconds):** set `proxy_pass` back to `http://127.0.0.1:3000;`, then
 `sudo nginx -t && sudo systemctl reload nginx` and `sudo systemctl start singalong`.
 
+### 5b. GeoIP country header (region-aware discovery) — *optional*
+
+The app biases song discovery (search / trending / related / recommendations)
+toward uploads playable in the **viewer's country**. It reads an `X-Country`
+header (an ISO country code like `US`) that nginx sets from the client IP via the
+**GeoIP2** module. Without this header the app falls back to the browser's
+language region, which is a weaker guess — so enabling this makes discovery match
+what YouTube actually region-enforces (both are IP-based). nginx here IS the
+public edge, so `$remote_addr` is the real client IP — no `X-Forwarded-For`
+parsing needed.
+
+```bash
+# 1. Install the GeoIP2 module + a country DB (Debian/Ubuntu).
+sudo apt-get install -y libnginx-mod-http-geoip2 geoipupdate
+#    Configure geoipupdate with a free MaxMind account (AccountID + LicenseKey)
+#    in /etc/GeoIP.conf, then fetch GeoLite2-Country.mmdb:
+sudo geoipupdate            # writes /var/lib/GeoIP/GeoLite2-Country.mmdb
+```
+
+In the `http {}` block (e.g. `/etc/nginx/nginx.conf`):
+
+```nginx
+geoip2 /var/lib/GeoIP/GeoLite2-Country.mmdb {
+    $geoip2_country_code source=$remote_addr country iso_code;
+}
+```
+
+Then in the vhost `location /` from step 5, add one line alongside the other
+`proxy_set_header`s:
+
+```nginx
+    proxy_set_header X-Country $geoip2_country_code;
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+# verify: the app now sees X-Country; hitting an API route from abroad biases results.
+```
+
+A monthly `geoipupdate` cron keeps the DB fresh (country IP allocations rarely
+move, so staleness is harmless). If the module isn't installed, just omit it —
+the app degrades gracefully to language-based region.
+
 ### 6. Google OAuth
 
 The redirect URI `https://sho-karaoke.duckdns.org/api/auth/callback/google` is the

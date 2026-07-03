@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchSongs } from "@/lib/search";
+import { regionFromRequest } from "@/lib/region";
 
 // This route shells out to yt-dlp, so it must run on the Node runtime (not edge)
 // and not be statically optimized.
@@ -15,9 +16,10 @@ export async function GET(req: NextRequest) {
 
   const karaokeOnly = p.get("karaokeOnly") === "1"; // off by default
   const limit = Math.min(Math.max(Number(p.get("limit")) || 20, 10), 100);
+  const region = regionFromRequest(req);
 
   try {
-    const { results, source } = await searchSongs(q, { karaokeOnly, limit });
+    const { results, source } = await searchSongs(q, { karaokeOnly, limit, region });
     return NextResponse.json({ results, source });
   } catch (err) {
     // Both backends failed (e.g. yt-dlp missing AND no API key / quota gone).

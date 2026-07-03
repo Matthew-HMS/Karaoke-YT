@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRelated } from "@/lib/recommend";
+import { regionFromRequest } from "@/lib/region";
 
 // Shells out to yt-dlp → Node runtime, not statically optimized.
 export const runtime = "nodejs";
@@ -14,9 +15,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "videoId required", results: [] }, { status: 400 });
   }
   const title = req.nextUrl.searchParams.get("title") || undefined;
+  const region = regionFromRequest(req);
 
   try {
-    const results = await getRelated(videoId, title);
+    const results = await getRelated(videoId, title, region);
     return NextResponse.json({ results });
   } catch (err) {
     const message = err instanceof Error ? err.message : "related fetch failed";

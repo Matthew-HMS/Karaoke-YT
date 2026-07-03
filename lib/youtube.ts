@@ -131,9 +131,9 @@ export async function getMostPopularMusic(
 
 export async function searchYouTube(
   query: string,
-  opts: { karaokeOnly: boolean; limit?: number }
+  opts: { karaokeOnly: boolean; limit?: number; region?: string }
 ): Promise<SearchResult[]> {
-  const { karaokeOnly, limit = 20 } = opts;
+  const { karaokeOnly, limit = 20, region } = opts;
   const q = karaokeOnly ? `${query} karaoke instrumental lyrics` : query;
   const url = new URL(`${API_BASE}/search`);
   url.searchParams.set("part", "snippet");
@@ -142,6 +142,9 @@ export async function searchYouTube(
   url.searchParams.set("q", q);
   if (karaokeOnly) url.searchParams.set("videoCategoryId", "10"); // Music
   url.searchParams.set("videoEmbeddable", "true"); // skip non-embeddable
+  // Bias results to what's available in the viewer's country, so we surface a
+  // region-playable upload rather than one blocked where they are.
+  if (region) url.searchParams.set("regionCode", region);
   url.searchParams.set("key", apiKey());
 
   const res = await fetch(url);
