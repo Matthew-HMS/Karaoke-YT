@@ -122,12 +122,17 @@ export function SearchTab({
   onStar,
   starred,
   signedIn,
+  pageScroll = false,
 }: {
   onAdd: (r: SearchResult) => void;
   onAddMany: (rs: SearchResult[]) => void;
   onStar: (r: SearchResult) => void;
   starred: Set<string>;
   signedIn: boolean;
+  // When set, don't cap the results in an internal scroller on small screens —
+  // let them grow so the whole PAGE scrolls (phone-host view). On lg it still
+  // scrolls internally. Default (remote) keeps the fixed-bar + internal scroll.
+  pageScroll?: boolean;
 }) {
   const [q, setQ] = useState("");
   const [karaokeOnly, setKaraokeOnly] = useState(false);
@@ -190,7 +195,11 @@ export function SearchTab({
 
   // After a fresh search, jump back to the top of the results so you start at
   // the first match instead of wherever you'd scrolled to.
-  const scrollToTop = () => scrollRef.current?.scrollTo({ top: 0 });
+  const scrollToTop = () => {
+    scrollRef.current?.scrollTo({ top: 0 });
+    // In pageScroll mode the results aren't the scroller — the page is.
+    if (pageScroll) window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const looksLikeUrl = /youtu\.be\/|youtube\.com\//.test(q);
   // A real playlist link (has list=, not an auto-generated radio/mix).
@@ -313,7 +322,13 @@ export function SearchTab({
   const browsing = !lastQuery && !looksLikeUrl;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className={
+        pageScroll
+          ? "flex flex-col lg:min-h-0 lg:flex-1"
+          : "flex min-h-0 flex-1 flex-col"
+      }
+    >
       {/* Fixed controls — never scroll, so the search field is always visible. */}
       <div className="shrink-0 px-4 pb-3 pt-4">
         <div className="flex gap-2">
@@ -373,8 +388,16 @@ export function SearchTab({
         )}
       </div>
 
-      {/* Only the results scroll. */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-1">
+      {/* Only the results scroll (except in pageScroll mode on small screens,
+          where the whole page scrolls and the results just grow). */}
+      <div
+        ref={scrollRef}
+        className={`px-4 pb-4 pt-1 ${
+          pageScroll
+            ? "lg:min-h-0 lg:flex-1 lg:overflow-y-auto"
+            : "min-h-0 flex-1 overflow-y-auto"
+        }`}
+      >
         {browsing ? (
           // Discover feed: top hits (signed out) or personalized picks.
           <>

@@ -23,7 +23,7 @@ import {
   TAB_LABELS,
   type Tab,
 } from "@/components/SongTabs";
-import { ControlsMenu } from "@/components/ControlsMenu";
+import { ControlsMenu, VolumeIcon } from "@/components/ControlsMenu";
 import { PitchRibbon } from "@/components/PitchRibbon";
 import { ScoreCard } from "@/components/ScoreCard";
 import { SpinnerWheel } from "@/components/SpinnerWheel";
@@ -48,43 +48,6 @@ type FsDocument = Document & {
 type FsElement = HTMLElement & {
   webkitRequestFullscreen?: () => Promise<void>;
 };
-
-// Speaker icon that matches the volume level: 0 waves + ✕ when muted, one wave
-// when quiet, two when loud. Inherits color via currentColor.
-function VolumeIcon({
-  level,
-  className,
-}: {
-  level: number;
-  className?: string;
-}) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden>
-      <path d="M4 9v6h4l5 5V4L8 9H4z" fill="currentColor" />
-      {level === 0 ? (
-        <g
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinecap="round"
-          fill="none"
-        >
-          <path d="M16 9.5l5 5" />
-          <path d="M21 9.5l-5 5" />
-        </g>
-      ) : (
-        <g
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinecap="round"
-          fill="none"
-        >
-          <path d="M15.5 9a4 4 0 0 1 0 6" />
-          {level >= 50 && <path d="M18.5 6.5a8 8 0 0 1 0 11" />}
-        </g>
-      )}
-    </svg>
-  );
-}
 
 export default function HostPage() {
   const code = String(useParams().room || "").toUpperCase();
@@ -186,7 +149,11 @@ export default function HostPage() {
   // relayed by the server back to this host socket.
   useEffect(() => {
     const socket = getSocket();
-    const onCommand = (cmd: { cmd: string; valueSec?: number }) => {
+    const onCommand = (cmd: {
+      cmd: string;
+      valueSec?: number;
+      value?: number;
+    }) => {
       const p = playerRef.current;
       if (!p) return;
       if (cmd.cmd === "play") p.play();
@@ -194,6 +161,13 @@ export default function HostPage() {
       else if (cmd.cmd === "restart") p.restart();
       else if (cmd.cmd === "seek" && typeof cmd.valueSec === "number")
         p.seek(cmd.valueSec);
+      else if (cmd.cmd === "volume" && typeof cmd.value === "number") {
+        // A remote set the TV volume — apply it and mirror it into our local
+        // slider + storage so the footer/menu reflect the new level.
+        p.setVolume(cmd.value);
+        setVolume(cmd.value);
+        localStorage.setItem("host-volume", String(cmd.value));
+      }
       // "skip" advances the queue server-side; the new videoId arrives via
       // room:state and the player loads it automatically.
     };
@@ -391,8 +365,11 @@ export default function HostPage() {
 
   return (
     // Stacked on narrow screens (phone host: video on top, panel below);
-    // side-by-side on wide screens (laptop host).
-    <main className="flex h-screen flex-col overflow-hidden bg-black lg:flex-row">
+    // side-by-side on wide screens (laptop host). On a phone the whole page
+    // scrolls as one column — the video, header and join strip scroll away so
+    // the song list gets the full screen — while the tab bar sticks to the top.
+    // On lg it's a fixed-height split with an internally-scrolling side panel.
+    <main className="flex min-h-[100dvh] flex-col bg-black lg:h-screen lg:flex-row lg:overflow-hidden">
       {/* LEFT: video stage + slim footer. */}
       <div
         className={`flex flex-col overflow-hidden lg:min-h-0 lg:flex-1 ${
@@ -541,14 +518,16 @@ export default function HostPage() {
             </span>
           </div>
 
-          {/* TV volume — local to this screen. Hidden in fullscreen (where the
-              footer is reserved for the join code / next-up). */}
+          {/* TV volume — local to this screen (also in the Controls menu).
+              Hidden in fullscreen (the footer is reserved for join code /
+              next-up there). The slider length shrinks on smaller screens,
+              like the progress bar. */}
           {!isFullscreen && (
-            <div className="flex w-36 shrink-0 items-center gap-2">
+            <div className="flex w-20 shrink-0 items-center gap-2 sm:w-28 lg:w-36">
               <button
                 type="button"
                 onClick={() => changeVolume(volume === 0 ? 100 : 0)}
-                className="shrink-0 text-white/60 transition hover:text-white"
+                className="shrink-0 text-white/60 transition hover:text-white active:scale-95"
                 aria-label={volume === 0 ? "Unmute" : "Mute"}
               >
                 <VolumeIcon level={volume} className="h-5 w-5" />
@@ -560,10 +539,11 @@ export default function HostPage() {
                 value={volume}
                 onChange={(e) => changeVolume(Number(e.target.value))}
                 aria-label="Volume"
-                className="h-1 flex-1 cursor-pointer accent-fuchsia-500"
+                className="h-1 min-w-0 flex-1 cursor-pointer accent-fuchsia-500"
               />
             </div>
           )}
+
           <button
             type="button"
             onClick={toggleFullscreen}
@@ -577,7 +557,7 @@ export default function HostPage() {
 
       {/* RIGHT: phone-sized remote panel (full height). Hidden in fullscreen. */}
       {!isFullscreen && (
-        <aside className="relative flex w-full flex-1 flex-col overflow-hidden border-t border-white/10 bg-[#0a0a0f] lg:w-[400px] lg:flex-none lg:border-l lg:border-t-0">
+        <aside className="relative flex w-full flex-1 flex-col border-t border-white/10 bg-[#0a0a0f] lg:w-[400px] lg:flex-none lg:overflow-hidden lg:border-l lg:border-t-0">
           {/* Header: who's singing + sign in */}
           <header className="flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
             <span className="min-w-0 truncate text-sm text-white/60">
@@ -618,14 +598,19 @@ export default function HostPage() {
             )}
             <div className="min-w-0">
               <div className="text-[10px] font-medium uppercase tracking-wide text-white/40">
-                Room · scan to join
-              </div>
-              <div className="text-2xl font-black tracking-[0.25em] text-white">
-                {code}
+                Scan to join
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-white/40">
-                  Pass
+                  Room
+                </span>
+                <span className="text-2xl font-black tracking-[0.25em] text-white">
+                  {code}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-white/40">
+                  Password
                 </span>
                 <span className="bg-gradient-to-r from-fuchsia-500 to-pink-500 bg-clip-text text-lg font-black tracking-[0.25em] text-transparent">
                   {password || "····"}
@@ -640,8 +625,9 @@ export default function HostPage() {
             />
           </div>
 
-          {/* Tabs */}
-          <nav className="flex border-b border-white/10">
+          {/* Tabs — stick to the top while the page scrolls on a phone, so you
+              can switch tabs without scrolling back up. */}
+          <nav className="sticky top-0 z-10 flex border-b border-white/10 bg-[#0a0a0f] lg:static">
             {(["search", "favorites", "recent", "queue"] as Tab[]).map((t) => (
               <button
                 key={t}
@@ -660,10 +646,12 @@ export default function HostPage() {
 
           {/* Tab content. Search has its own fixed bar + scrolling results and
               stays mounted (hidden) so results persist across tab switches. */}
-          <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex flex-col lg:min-h-0 lg:flex-1">
             <div
               className={
-                tab === "search" ? "flex min-h-0 flex-1 flex-col" : "hidden"
+                tab === "search"
+                  ? "flex flex-col lg:min-h-0 lg:flex-1"
+                  : "hidden"
               }
             >
               <SearchTab
@@ -672,10 +660,11 @@ export default function HostPage() {
                 onStar={favorite}
                 starred={starred}
                 signedIn={signedIn}
+                pageScroll
               />
             </div>
             {tab !== "search" && (
-              <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-4">
+              <div className="no-scrollbar px-4 py-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
                 {tab === "favorites" &&
                   (signedIn ? (
                     <FavoritesTab onAdd={add} onStar={favorite} starred={starred} />
@@ -717,10 +706,12 @@ export default function HostPage() {
             onNameChange={saveName}
             showTarget={showTarget}
             onToggleTarget={() => setShowTarget(!showTarget)}
+            volume={volume}
+            onVolumeChange={changeVolume}
             onSfx={sendSfx}
             onSpin={spinWheel}
             suggestedNames={queuedSingers}
-            containerClassName="absolute bottom-5 right-5"
+            containerClassName="fixed bottom-5 right-5 lg:absolute"
           />
         </aside>
       )}

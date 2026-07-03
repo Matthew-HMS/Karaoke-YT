@@ -12,12 +12,37 @@ import { SFX_BUTTONS } from "@/components/SongTabs";
 import type { SfxName } from "@/lib/types";
 import type { MicPitch } from "@/lib/useMicPitch";
 
+// Speaker icon that matches the volume level: 0 waves + ✕ when muted, one wave
+// when quiet, two when loud. Inherits color via currentColor.
+export function VolumeIcon({ level, className }: { level: number; className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden>
+      <path d="M4 9v6h4l5 5V4L8 9H4z" fill="currentColor" />
+      {level === 0 ? (
+        <g stroke="currentColor" strokeWidth={2} strokeLinecap="round" fill="none">
+          <path d="M16 9.5l5 5" />
+          <path d="M21 9.5l-5 5" />
+        </g>
+      ) : (
+        <g stroke="currentColor" strokeWidth={2} strokeLinecap="round" fill="none">
+          <path d="M15.5 9a4 4 0 0 1 0 6" />
+          {level >= 50 && <path d="M18.5 6.5a8 8 0 0 1 0 11" />}
+        </g>
+      )}
+    </svg>
+  );
+}
+
 type Props = {
   mic: MicPitch;
   name: string;
   onNameChange: (name: string) => void;
   showTarget: boolean;
   onToggleTarget: () => void;
+  // TV volume (0–100) + its setter. Host-only (the TV's own speaker); omit on the
+  // remote to hide the Volume section entirely.
+  volume?: number;
+  onVolumeChange?: (v: number) => void;
   onSfx: (name: SfxName) => void;
   // Spin the random-singer wheel with the given name list.
   onSpin: (names: string[]) => void;
@@ -34,6 +59,8 @@ export function ControlsMenu({
   onNameChange,
   showTarget,
   onToggleTarget,
+  volume,
+  onVolumeChange,
   onSfx,
   onSpin,
   suggestedNames = [],
@@ -166,6 +193,37 @@ export function ControlsMenu({
             )}
 
             <div className="my-3 h-px shrink-0 bg-white/10" />
+
+            {/* TV volume — local to this (host) screen. Only rendered when a
+                setter is supplied, so the remote's menu skips it. */}
+            {onVolumeChange && (
+              <>
+                <div className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+                  🔊 Volume
+                </div>
+                <div className="mb-1 flex items-center gap-3 rounded-xl bg-white/5 px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => onVolumeChange((volume ?? 0) === 0 ? 100 : 0)}
+                    className="shrink-0 text-white/60 transition hover:text-white active:scale-95"
+                    aria-label={(volume ?? 0) === 0 ? "Unmute" : "Mute"}
+                  >
+                    <VolumeIcon level={volume ?? 0} className="h-5 w-5" />
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={volume ?? 0}
+                    onChange={(e) => onVolumeChange(Number(e.target.value))}
+                    aria-label="Volume"
+                    className="h-1 flex-1 cursor-pointer accent-fuchsia-500"
+                  />
+                </div>
+
+                <div className="my-3 h-px shrink-0 bg-white/10" />
+              </>
+            )}
 
             {/* Random singer — an editable list (seeded from the queue) the
                 wheel picks from, spun on the TV for everyone. */}

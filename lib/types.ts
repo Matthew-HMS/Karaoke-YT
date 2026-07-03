@@ -49,7 +49,10 @@ export type PlayerCommand =
   | { cmd: "pause" }
   | { cmd: "skip" }
   | { cmd: "restart" }
-  | { cmd: "seek"; valueSec: number };
+  | { cmd: "seek"; valueSec: number }
+  // TV volume 0–100. Lets a remote adjust the host's speaker; every host in the
+  // room obeys it (remotes have no player and ignore it).
+  | { cmd: "volume"; value: number };
 
 // ---- Socket.IO event maps (typed both ends) ----
 

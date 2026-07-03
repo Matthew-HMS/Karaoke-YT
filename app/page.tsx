@@ -101,7 +101,7 @@ export default function Landing() {
               setJoinHint(false);
             }}
             onKeyDown={(e) => e.key === "Enter" && joinRoom()}
-            placeholder="ENTER CODE"
+            placeholder="ENTER ROOM CODE"
             inputMode="text"
             autoCapitalize="characters"
             autoComplete="off"

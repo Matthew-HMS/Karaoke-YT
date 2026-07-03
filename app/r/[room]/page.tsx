@@ -56,6 +56,10 @@ export default function RemotePage() {
     spinWheel,
   } = useRoom(code, "remote", { password: pw, userId: session?.user?.id });
 
+  // TV volume as last set from THIS phone (0–100). The remote has no player, so
+  // this just drives the slider + the volume command it sends to the host(s).
+  const [volume, setVolume] = useState(100);
+
   // Seed the random-singer wheel with the people who've queued songs.
   const queuedSingers = useMemo(() => {
     const all = [
@@ -247,6 +251,11 @@ export default function RemotePage() {
         onNameChange={saveName}
         showTarget={showTarget}
         onToggleTarget={() => setShowTarget(!showTarget)}
+        volume={volume}
+        onVolumeChange={(v) => {
+          setVolume(v);
+          sendCommand({ cmd: "volume", value: v });
+        }}
         onSfx={sendSfx}
         onSpin={spinWheel}
         suggestedNames={queuedSingers}

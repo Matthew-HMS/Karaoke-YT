@@ -32,9 +32,9 @@ export function useRoom(
   // the `player:state` event so the scrub bar can track playback live.
   const [livePlayer, setLivePlayer] = useState<PlayerState | null>(null);
   const [connected, setConnected] = useState(false);
-  // Room-wide "show the TV target pitch line" toggle (default on). Synced so
+  // Room-wide "show the TV target pitch line" toggle (default off). Synced so
   // every host + remote agrees.
-  const [showTarget, setShowTargetState] = useState(true);
+  const [showTarget, setShowTargetState] = useState(false);
   // Latest random-singer wheel spin to animate (null = none). `id` increments
   // per spin so the wheel re-runs even when the same name/turns repeat.
   const [wheelSpin, setWheelSpin] = useState<{

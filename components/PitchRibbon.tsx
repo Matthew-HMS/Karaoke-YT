@@ -57,7 +57,7 @@ type Props = {
   // song-time via the live player position. Null = not ready / unavailable.
   referenceMidis?: number[] | null;
   referenceFps?: number;
-  showTarget?: boolean; // room toggle: draw the target line or not (default on)
+  showTarget?: boolean; // room toggle: draw the target line or not (default off)
   songTimeSec?: number; // current playback position (host's authoritative time)
   playing?: boolean; // is the video actually playing right now
 };
@@ -68,7 +68,7 @@ export function PitchRibbon({
   onFinalize,
   referenceMidis,
   referenceFps = 12,
-  showTarget = true,
+  showTarget = false,
   songTimeSec = 0,
   playing = false,
 }: Props) {
@@ -347,29 +347,22 @@ export function PitchRibbon({
         }
       }
 
-      // ---- Singer's voice: fills the target block pink when matched ----
-      // A thick rounded bar at the sung pitch. With a contour playing we fold the
-      // sung note into the target's octave, so hitting the right pitch class lands
-      // the bar INSIDE the block (filling it); color runs violet→pink by how on-note.
-      ctx.lineCap = "round";
-      ctx.lineWidth = noteH;
-      let prevX = 0;
-      let prevY = 0;
-      let prevT = 0;
-      let prevOk = false;
-      for (let i = 0; i < samples.length; i++) {
-        const s = samples[i];
-        if (s.midi <= 0) {
-          prevOk = false;
-          continue;
-        }
+      // ---- Singer's voice: SAME note-block shape as the target, just colored ----
+      // Drawn identically to the target lane (rounded blocks snapped to semitone
+      // rows), so an on-pitch block lands exactly on top of the hollow target it
+      // matches — visibly "filling it in". Color runs violet→pink by how on-note.
+      // The displayed pitch is folded into the target's octave first, so singing
+      // the right pitch class in any octave lines up with the target row.
+      const halfSampleMs = 28; // pad each run so adjacent sample-blocks touch
+      // Per-sample displayed semitone (octave-folded to the target) + match quality.
+      const singerInfo = (s: Stamped) => {
         let quality: number;
         let disp = s.midi;
         if (ref && ref.length && playingRef.current) {
           const sSongT = anchor.songTime + (s.t - anchor.wall) / 1000;
           const tgt = referenceMidiAt(ref, fps, sSongT);
           if (tgt >= 0) {
-            disp = s.midi - 12 * Math.round((s.midi - tgt) / 12); // fold to target octave
+            disp = s.midi - 12 * Math.round((s.midi - tgt) / 12);
             quality = pitchMatchScore(s.midi, tgt);
           } else {
             quality = tuneScore(s.midi);
@@ -377,27 +370,40 @@ export function PitchRibbon({
         } else {
           quality = tuneScore(s.midi);
         }
-        const x = xOf(s.t);
-        const y = yOf(disp);
-        // On-brand ramp matching the app's fuchsia→pink accent: deep violet
-        // (hue 280) when off-pitch → bright pink (hue 328) when on-pitch, getting
-        // more saturated and lighter as it locks on.
-        ctx.strokeStyle = `hsl(${280 + quality * 48}, ${72 + quality * 20}%, ${52 + quality * 16}%)`;
-        if (prevOk && s.t - prevT < 200 && Math.abs(y - prevY) < noteH * 2) {
-          ctx.beginPath();
-          ctx.moveTo(prevX, prevY);
-          ctx.lineTo(x, y);
-          ctx.stroke();
-        } else {
-          ctx.beginPath();
-          ctx.arc(x, y, noteH / 2, 0, Math.PI * 2);
-          ctx.fillStyle = ctx.strokeStyle;
-          ctx.fill();
+        return { sm: Math.round(disp), q: quality };
+      };
+      // Group consecutive voiced samples at the same semitone (with no big time
+      // gap) into one block — the mirror of the target grouping above.
+      for (let i = 0; i < samples.length; ) {
+        if (samples[i].midi <= 0) {
+          i++;
+          continue;
         }
-        prevX = x;
-        prevY = y;
-        prevT = s.t;
-        prevOk = true;
+        const info = singerInfo(samples[i]);
+        let j = i;
+        let qSum = info.q;
+        let qN = 1;
+        while (
+          j + 1 < samples.length &&
+          samples[j + 1].midi > 0 &&
+          samples[j + 1].t - samples[j].t <= 200 &&
+          singerInfo(samples[j + 1]).sm === info.sm
+        ) {
+          j++;
+          qSum += singerInfo(samples[j]).q;
+          qN++;
+        }
+        const q = qSum / qN;
+        const x0 = xOf(samples[i].t - halfSampleMs);
+        const x1 = xOf(samples[j].t + halfSampleMs);
+        roundedRectPath(ctx, x0, yOf(info.sm) - noteH / 2, Math.max(noteH, x1 - x0), noteH, noteH / 2);
+        // Solid fill (violet→pink) so it covers the target's hollow block when matched.
+        ctx.fillStyle = `hsl(${280 + q * 48}, ${72 + q * 20}%, ${52 + q * 16}%)`;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = `hsl(${280 + q * 48}, ${82 + q * 15}%, ${66 + q * 16}%)`;
+        ctx.stroke();
+        i = j + 1;
       }
 
       // "Now" marker down the CENTER — the note playing on screen right now, and

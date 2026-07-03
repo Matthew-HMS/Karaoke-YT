@@ -10,6 +10,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from "react";
 import { PlayerState } from "@/lib/types";
 
@@ -85,6 +86,29 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
   const currentVideo = useRef<string | null>(null);
   // Fire onReady only on the first time playback actually starts.
   const readyFired = useRef(false);
+  // Whether the CURRENT video has ever reached PLAYING. Reset on each new load.
+  // Before the first play, a PAUSED/cued state is a stalled autoplay (common on
+  // flaky wifi, where YouTube parks on its big play button) — not an intentional
+  // pause — so we keep nudging it and don't broadcast "paused" to the room.
+  const startedRef = useRef(false);
+  // Mirror of startedRef as state, purely to toggle the click-blocking overlay:
+  // BEFORE the video has started we let taps reach the iframe so the user can
+  // hit YouTube's own play button if autoplay was blocked (a real in-iframe user
+  // gesture — the only thing that starts a cross-origin embed the browser
+  // refused to autoplay). AFTER it's playing the overlay re-engages to protect
+  // room sync (no tap-to-pause on just this screen).
+  const [started, setStarted] = useState(false);
+  // When the current video was loaded, and whether we've already retried it
+  // muted. Autoplay-with-sound is attempted first; if the video is still parked
+  // on the play button after a short grace, the browser blocked sounded
+  // autoplay, so we retry MUTED (always permitted). Reset on each new load.
+  const loadedAtRef = useRef(0);
+  const mutedTriedRef = useRef(false);
+  // True when the video still hasn't started even after the muted retry — i.e.
+  // it's region-restricted on THIS screen (playable where it was queued, blocked
+  // here). We only show a local notice; we never skip, so hosts in a region that
+  // CAN play it keep going. Clears on a new load or if it recovers and plays.
+  const [regionBlocked, setRegionBlocked] = useState(false);
   // Keep latest callbacks without re-initializing the player.
   const cbs = useRef({ onReport, onEnded, onError, onReady });
   cbs.current = { onReport, onEnded, onError, onReady };
@@ -124,10 +148,16 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
         videoId: videoId || undefined,
         width: "100%",
         height: "100%",
-        playerVars: { 
-          autoplay: 1, 
-          controls: 0, 
-          rel: 0, 
+        playerVars: {
+          // Try to autoplay WITH sound. Browsers that allow it (e.g. Chrome for
+          // a site you interact with often) start with audio immediately. Those
+          // that block sounded autoplay (Safari, stricter settings) park on the
+          // play button — the watchdog below detects that and retries MUTED,
+          // which is always permitted, so playback still starts. The host then
+          // un-mutes on the first user gesture (see host page `unlock`).
+          autoplay: 1,
+          controls: 0,
+          rel: 0,
           modestbranding: 1,
           origin: window.location.origin,
           enablejsapi: 1
@@ -136,6 +166,11 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
           onReady: () => {
             if (videoId && currentVideo.current !== videoId) {
               currentVideo.current = videoId;
+              startedRef.current = false;
+              setStarted(false);
+              setRegionBlocked(false);
+              loadedAtRef.current = Date.now();
+              mutedTriedRef.current = false;
               playerRef.current?.loadVideoById(videoId);
             }
           },
@@ -146,6 +181,9 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
             if (e.data === YT.PlayerState.ENDED) {
               cbs.current.onEnded();
             } else if (e.data === YT.PlayerState.PLAYING) {
+              startedRef.current = true;
+              setStarted(true);
+              setRegionBlocked(false);
               cbs.current.onReport({
                 status: "playing",
                 currentTimeSec: p.getCurrentTime(),
@@ -156,6 +194,13 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
                 cbs.current.onReady?.();
               }
             } else if (e.data === YT.PlayerState.PAUSED) {
+              // A PAUSED before the video ever started is a stalled autoplay,
+              // not a real pause — nudge it instead of telling the room we're
+              // paused (which would flip everyone's play button + stop sync).
+              if (!startedRef.current) {
+                p.playVideo();
+                return;
+              }
               cbs.current.onReport({
                 status: "paused",
                 currentTimeSec: p.getCurrentTime(),
@@ -188,9 +233,26 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
         if (!p || !currentVideo.current || !window.YT) return;
         const state = p.getPlayerState();
         // Watchdog for stalled autoplay: a flaky connection can leave the
-        // video parked at CUED (5) or UNSTARTED (-1). Keep nudging it to play
-        // so it recovers on its own without anyone clicking the video.
-        if (state === 5 || state === -1) {
+        // video parked at CUED (5), UNSTARTED (-1), or — after a buffering
+        // stall — PAUSED (2) before it ever started, all of which show
+        // YouTube's big play button. Keep nudging it to play so it recovers on
+        // its own without anyone clicking the video. Once it HAS started,
+        // PAUSED is honored as a real pause.
+        if (state === 5 || state === -1 || (state === 2 && !startedRef.current)) {
+          const elapsed = Date.now() - loadedAtRef.current;
+          // Still parked after a short grace → the browser blocked sounded
+          // autoplay. Retry MUTED (universally allowed) so it plays anyway; the
+          // host un-mutes on the first user gesture.
+          if (!mutedTriedRef.current && elapsed > 2000) {
+            mutedTriedRef.current = true;
+            p.mute();
+          }
+          // Still not playing even MUTED after a long grace → this video is
+          // region-restricted on this screen. Show a local notice (no skip, so
+          // other regions keep playing). Self-clears if it ever starts.
+          if (mutedTriedRef.current && elapsed > 8000) {
+            setRegionBlocked(true);
+          }
           p.playVideo();
           return;
         }
@@ -228,6 +290,11 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
     if (!videoId || !playerRef.current) return;
     if (currentVideo.current === videoId) return;
     currentVideo.current = videoId;
+    startedRef.current = false;
+    setStarted(false);
+    setRegionBlocked(false);
+    loadedAtRef.current = Date.now();
+    mutedTriedRef.current = false;
     playerRef.current.loadVideoById(videoId);
   }, [videoId]);
 
@@ -235,12 +302,35 @@ export const YouTubePlayer = forwardRef<PlayerHandle, Props>(function YouTubePla
     <div className="relative h-full w-full">
       <div className="h-full w-full" ref={containerRef} />
       {/* Transparent overlay that swallows clicks/taps so YouTube's own
-          play/pause (native controls, and tap-to-pause) can't be used. That
-          path changes only THIS screen and never reaches the other hosts,
-          breaking sync. With it blocked, all playback goes through our own
-          controls, which broadcast to every host. The tap still counts as a
-          page interaction, satisfying autoplay policies. */}
-      <div className="absolute inset-0 z-10" aria-hidden />
+          play/pause (native controls, and tap-to-pause) can't be used once
+          playing — that path changes only THIS screen and never reaches the
+          other hosts, breaking sync. With it blocked, all playback goes through
+          our own controls, which broadcast to every host.
+          BEFORE the video has started we make it click-through
+          (pointer-events-none) so a user whose browser refused to autoplay can
+          tap YouTube's own play button to start it — the only reliable way to
+          begin a cross-origin embed the browser blocked. Once it's PLAYING the
+          overlay re-engages to protect sync. */}
+      <div
+        className={`absolute inset-0 z-10 ${started ? "" : "pointer-events-none"}`}
+        aria-hidden
+      />
+
+      {/* Region-restriction notice: this specific video won't play on THIS
+          screen (blocked in this country) even after a muted retry. We show it
+          locally and never skip, so anyone in a region that CAN play it keeps
+          singing. */}
+      {regionBlocked && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/85 px-6 text-center">
+          <p className="text-2xl font-bold text-amber-300">
+            Not available in your region
+          </p>
+          <p className="mt-2 max-w-md text-white/60">
+            YouTube blocks this video where you are. Others in a supported region
+            can still play it — or pick a different upload of the song.
+          </p>
+        </div>
+      )}
     </div>
   );
 });
