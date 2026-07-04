@@ -335,10 +335,22 @@ export default function HostPage() {
   const toggleFullscreen = () => {
     const doc = document as FsDocument;
     const el = document.documentElement as FsElement;
+    // `screen.orientation.lock` isn't in the DOM lib types and is Android-only.
+    const orientation = window.screen?.orientation as
+      | (ScreenOrientation & { lock?: (o: string) => Promise<void> })
+      | undefined;
     if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      orientation?.unlock?.();
       (doc.exitFullscreen ?? doc.webkitExitFullscreen)?.call(doc);
     } else {
-      (el.requestFullscreen ?? el.webkitRequestFullscreen)?.call(el);
+      const req = (el.requestFullscreen ?? el.webkitRequestFullscreen)?.call(el);
+      // On a phone the video is width-limited in portrait, so fullscreen alone
+      // doesn't make it bigger — force landscape so it fills the long edge. The
+      // lock only works once fullscreen is active (and only on phones); it's a
+      // no-op / rejects on desktop and iOS, which we ignore.
+      Promise.resolve(req)
+        .then(() => orientation?.lock?.("landscape"))
+        .catch(() => {});
     }
   };
 
@@ -364,12 +376,13 @@ export default function HostPage() {
   }
 
   return (
-    // Stacked on narrow screens (phone host: video on top, panel below);
-    // side-by-side on wide screens (laptop host). On a phone the whole page
-    // scrolls as one column — the video, header and join strip scroll away so
-    // the song list gets the full screen — while the tab bar sticks to the top.
-    // On lg it's a fixed-height split with an internally-scrolling side panel.
-    <main className="flex min-h-[100dvh] flex-col bg-black lg:h-screen lg:flex-row lg:overflow-hidden">
+    // Stacked on narrow screens (phone host: video pinned on top, panel below);
+    // side-by-side on wide screens (laptop host). On a phone the video stays
+    // fixed while the panel beneath it scrolls on its own — the header and join
+    // strip scroll away so the song list gets more room, with the tab bar
+    // sticking to the top. On lg it's a fixed-height split with an
+    // internally-scrolling side panel.
+    <main className="flex h-[100dvh] flex-col overflow-hidden bg-black lg:h-screen lg:flex-row">
       {/* LEFT: video stage + slim footer. */}
       <div
         className={`flex flex-col overflow-hidden lg:min-h-0 lg:flex-1 ${
@@ -557,7 +570,7 @@ export default function HostPage() {
 
       {/* RIGHT: phone-sized remote panel (full height). Hidden in fullscreen. */}
       {!isFullscreen && (
-        <aside className="relative flex w-full flex-1 flex-col border-t border-white/10 bg-[#0a0a0f] lg:w-[400px] lg:flex-none lg:overflow-hidden lg:border-l lg:border-t-0">
+        <aside className="no-scrollbar relative flex w-full flex-1 flex-col overflow-y-auto border-t border-white/10 bg-[#0a0a0f] lg:w-[400px] lg:flex-none lg:overflow-hidden lg:border-l lg:border-t-0">
           {/* Header: who's singing + sign in */}
           <header className="flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
             <span className="min-w-0 truncate text-sm text-white/60">
