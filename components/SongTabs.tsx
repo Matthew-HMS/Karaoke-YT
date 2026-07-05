@@ -398,7 +398,7 @@ export function SearchTab({
           where the whole page scrolls and the results just grow). */}
       <div
         ref={scrollRef}
-        className={`px-4 pb-4 pt-1 ${
+        className={`no-scrollbar px-4 pb-4 pt-1 ${
           pageScroll
             ? "lg:min-h-0 lg:flex-1 lg:overflow-y-auto"
             : "min-h-0 flex-1 overflow-y-auto"
