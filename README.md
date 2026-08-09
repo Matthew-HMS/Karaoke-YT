@@ -70,10 +70,11 @@ instantly **seek to any part** of a song.
   play one-at-a-time on the TV (real `.mp3` clips in `public/sfx/`, with an
   in-browser synth fallback). Closing the panel never stops an in-progress take
   (the mic lives in a page-level hook); the button keeps showing your live note.
-  The same menu has a **🎡 Random singer** wheel: an editable name list (seeded
-  from whoever's queued songs) that, on a tap from any phone, **spins on the TV**
-  for the whole room to watch and lands on one name (the phone picks the winner +
-  spin and broadcasts it to the host), with a drumroll → applause.
+  The same menu has a **🎡 Random singer** wheel: a **shared** name list (seeded
+  from whoever's queued songs and synced room-wide, so every phone edits and sees
+  the same candidates) that, on a tap from any phone, **spins on the TV** for the
+  whole room to watch and lands on one name (the phone picks the winner + spin and
+  broadcasts it to the host), with a drumroll → applause.
 - 🎯 **Pitch & score** — set a name and tap **🎤 Sing** (in the menu above) to
   share the phone's mic; the browser detects your pitch (McLeod Pitch Method,
   `lib/pitch.ts`) and streams it to the TV, which paints a scrolling **pitch
@@ -97,6 +98,14 @@ instantly **seek to any part** of a song.
   always means "on the blue line." Requires `ffmpeg` on PATH (already in the Docker image).
   Monophonic detection on a full mix is noisy on dense arrangements — best on
   vocal-forward songs.
+- 🧑‍🏫 **First-run tour + "What's new"** — a new host gets a **guided spotlight
+  tour** of the big-screen view (join QR/code, the video stage, the tabs, the
+  🎤 Controls menu, and fullscreen), one step at a time. It shows only once
+  (tracked per-device in `localStorage`); the **?** button in the panel header
+  replays it anytime. After an update, a **"What's new"** modal lists the new
+  features the first time that device loads the app. The version and changelog
+  live in `lib/version.ts` — bump `APP_VERSION` and prepend a `CHANGELOG` entry
+  when you ship a user-visible feature (keep `package.json`'s version in sync).
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
 
 ## Architecture

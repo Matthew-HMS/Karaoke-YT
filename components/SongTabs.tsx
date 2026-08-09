@@ -806,7 +806,10 @@ export function PlayerTab({
   return (
     <div>
       {/* Sub-tabs: Queue / Lyrics / Related */}
-      <div className="grid grid-cols-3 gap-1 rounded-xl bg-black/20 p-1">
+      <div
+        data-tour="playertabs"
+        className="grid grid-cols-3 gap-1 rounded-xl bg-black/20 p-1"
+      >
         {SUB_TABS.map((t) => (
           <button
             key={t.key}

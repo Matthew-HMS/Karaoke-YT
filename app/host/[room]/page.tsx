@@ -24,9 +24,11 @@ import {
   type Tab,
 } from "@/components/SongTabs";
 import { ControlsMenu, VolumeIcon } from "@/components/ControlsMenu";
+import { HostTour, type TourStep } from "@/components/HostTour";
 import { PitchRibbon } from "@/components/PitchRibbon";
 import { ScoreCard } from "@/components/ScoreCard";
 import { SpinnerWheel } from "@/components/SpinnerWheel";
+import { WhatsNewModal } from "@/components/WhatsNewModal";
 import { PlayerHandle, YouTubePlayer } from "@/components/YouTubePlayer";
 import type { SingerScore } from "@/lib/pitch";
 import { formatTime } from "@/lib/format";
@@ -39,6 +41,14 @@ import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
 import { useWakeLock } from "@/lib/useWakeLock";
 import { usePrefetchLyrics } from "@/lib/usePrefetchLyrics";
+import {
+  clearOnboarded,
+  getLastSeenVersion,
+  hasOnboarded,
+  setLastSeenVersion,
+  setOnboarded,
+} from "@/lib/onboarding";
+import { APP_VERSION, CHANGELOG, isNewerVersion } from "@/lib/version";
 
 // Safari still exposes fullscreen only under webkit-prefixed names.
 type FsDocument = Document & {
@@ -88,6 +98,8 @@ export default function HostPage() {
     setShowTarget,
     wheelSpin,
     spinWheel,
+    wheelNames,
+    setWheelNames,
   } = useRoom(code, "host", {
     password,
     create: isCreator,
@@ -115,6 +127,7 @@ export default function HostPage() {
   // remote (page-level so closing the menu doesn't stop a take).
   const mic = useMicPitch({ singer: name.trim() || "Guest", onSample: reportPitch });
   const [joinUrl, setJoinUrl] = useState("");
+  const [qrEnlarged, setQrEnlarged] = useState(false);
   const [blockedId, setBlockedId] = useState<string | null>(null);
   // End-of-song score card: the PitchRibbon hands up the final per-singer
   // ranking when a song ends, and we show it for a few seconds. A timer ref
@@ -315,6 +328,38 @@ export default function HostPage() {
     return () => clearTimeout(t);
   }, [blockedId, nowPlaying, sendCommand]);
 
+  // Draggable split (lg only): width of the right panel in px. The video stage
+  // is flex-1, so shrinking the panel widens the video and vice-versa. Persisted
+  // so the host's preferred layout survives reloads. Clamped in the drag handler.
+  const PANEL_MIN = 320;
+  const PANEL_MAX = 760;
+  const [panelWidth, setPanelWidth] = useState(400);
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("hostPanelWidth"));
+    if (saved) setPanelWidth(Math.max(PANEL_MIN, Math.min(PANEL_MAX, saved)));
+  }, []);
+  const startPanelDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.max(PANEL_MIN, Math.min(PANEL_MAX, window.innerWidth - ev.clientX));
+      setPanelWidth(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setPanelWidth((w) => {
+        localStorage.setItem("hostPanelWidth", String(w));
+        return w;
+      });
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   // Fullscreen the whole host page. Includes the webkit-prefixed calls Safari
   // still requires.
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -354,6 +399,92 @@ export default function HostPage() {
     }
   };
 
+  // Onboarding: a first-run spotlight tour and a "what's new" modal. Both are
+  // per-device (localStorage) and host-only. The room UI (with the tour's
+  // `data-tour` anchors) is on screen once the co-host gate is cleared.
+  const roomReady = resolved && (isCreator || joined);
+  const [showTour, setShowTour] = useState(false);
+  const [whatsNew, setWhatsNew] = useState<typeof CHANGELOG>([]);
+
+  // First-run tour steps. Each points at a `[data-tour="..."]` anchor; some
+  // switch tabs first so the anchor is on screen. Memoized (stable identity) so
+  // the tour's measurement loop isn't disrupted by the host's frequent renders.
+  const tourSteps: TourStep[] = useMemo(
+    () => [
+      {
+        selector: '[data-tour="join"]',
+        title: "Invite singers 📱",
+        body: "Guests scan this QR code — or type the room code and password — to join from their phones.",
+      },
+      {
+        selector: '[data-tour="stage"]',
+        title: "The stage 📺",
+        body: "Whatever's queued plays here on the big screen. This is what everyone watches and sings along to.",
+      },
+      {
+        selector: '[data-tour="tabs"]',
+        title: "Find songs 🔍",
+        body: "Search for songs, or revisit your Favorites and Recents. Tap Queue to see what's coming up.",
+        onEnter: () => setTab("search"),
+      },
+      {
+        selector: '[data-tour="playertabs"]',
+        title: "Queue, Lyrics & Related 🎶",
+        body: "The Player tab has three views: what's up Next, synced Lyrics for the current song, and Related songs to add.",
+        onEnter: () => setTab("queue"),
+      },
+      {
+        selector: '[data-tour="controls"]',
+        title: "Sing & more 🎤",
+        body: "Open this menu to score your singing with the mic, show the target pitch line, set TV volume, spin the random-singer wheel, and fire off reactions.",
+      },
+      {
+        selector: '[data-tour="fullscreen"]',
+        title: "Go full screen ⛶",
+        body: "Fill the TV with the video. Tap here again anytime to exit.",
+      },
+    ],
+    [],
+  );
+  const decidedRef = useRef(false);
+  useEffect(() => {
+    if (!roomReady || decidedRef.current) return;
+    if (!hasOnboarded()) {
+      // The tour points at the right panel, which is hidden in fullscreen — wait
+      // until the host exits before starting it.
+      if (isFullscreen) return;
+      decidedRef.current = true;
+      setShowTour(true);
+      return;
+    }
+    decidedRef.current = true;
+    const last = getLastSeenVersion();
+    if (!last) {
+      // Onboarded before versioning existed — adopt the current version rather
+      // than retroactively showing every changelog entry.
+      setLastSeenVersion(APP_VERSION);
+      return;
+    }
+    const entries = CHANGELOG.filter((e) => isNewerVersion(e.version, last));
+    if (entries.length) setWhatsNew(entries);
+  }, [roomReady, isFullscreen]);
+
+  const finishTour = () => {
+    setShowTour(false);
+    setOnboarded();
+    // Stamp the current version too, so a brand-new host doesn't immediately get
+    // the "what's new" modal for features the tour just covered.
+    setLastSeenVersion(APP_VERSION);
+  };
+  const replayTour = () => {
+    clearOnboarded();
+    setShowTour(true);
+  };
+  const dismissWhatsNew = () => {
+    setWhatsNew([]);
+    setLastSeenVersion(APP_VERSION);
+  };
+
   // Co-host gating (the creator skips this — they make the room). Wait for the
   // sessionStorage check first so we don't flash a gate at the creator.
   if (!resolved) {
@@ -390,6 +521,7 @@ export default function HostPage() {
         }`}
       >
         <div
+          data-tour="stage"
           className={`relative w-full bg-black lg:flex-1 ${
             isFullscreen
               ? "flex-1"
@@ -559,6 +691,7 @@ export default function HostPage() {
 
           <button
             type="button"
+            data-tour="fullscreen"
             onClick={toggleFullscreen}
             className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-sm font-semibold transition hover:bg-white/20 active:scale-95"
             aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
@@ -568,9 +701,29 @@ export default function HostPage() {
         </footer>
       </div>
 
-      {/* RIGHT: phone-sized remote panel (full height). Hidden in fullscreen. */}
+      {/* Drag handle to resize the split (lg only). Widening the panel shrinks
+          the video and vice-versa. */}
       {!isFullscreen && (
-        <aside className="no-scrollbar relative flex w-full flex-1 flex-col overflow-y-auto border-t border-white/10 bg-[#0a0a0f] lg:w-[400px] lg:flex-none lg:overflow-hidden lg:border-l lg:border-t-0">
+        <div
+          onPointerDown={startPanelDrag}
+          className="hidden w-1.5 shrink-0 cursor-col-resize bg-white/10 transition-colors hover:bg-fuchsia-400/60 lg:block"
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize"
+        />
+      )}
+
+      {/* RIGHT: phone-sized remote panel (full height). Hidden — but kept
+          mounted — in fullscreen, so toggling fullscreen doesn't remount the
+          panel and refetch the recommendation list. Inline `display` wins over
+          the `flex` class. */}
+      <aside
+          style={{
+            "--panel-w": `${panelWidth}px`,
+            display: isFullscreen ? "none" : undefined,
+          } as React.CSSProperties}
+          className="no-scrollbar relative flex w-full flex-1 flex-col overflow-y-auto border-t border-white/10 bg-[#0a0a0f] lg:w-[var(--panel-w)] lg:flex-none lg:overflow-hidden lg:border-l lg:border-t-0"
+        >
           {/* Header: who's singing + sign in */}
           <header className="flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
             <span className="min-w-0 truncate text-sm text-white/60">
@@ -578,6 +731,15 @@ export default function HostPage() {
                 ? `🎤 ${session?.user?.name ?? ""}`
                 : "Singing as Guest — sign in to use your name"}
             </span>
+            <button
+              type="button"
+              onClick={replayTour}
+              className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-white/60 transition hover:text-white active:scale-95"
+              title="Replay the guided tour"
+              aria-label="Replay the guided tour"
+            >
+              ?
+            </button>
             {signedIn ? (
               <button
                 type="button"
@@ -599,15 +761,25 @@ export default function HostPage() {
           </header>
 
           {/* Join strip: QR + code + password so guests can hop on. */}
-          <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
+          <div
+            data-tour="join"
+            className="flex items-center gap-3 border-b border-white/10 px-4 py-3"
+          >
             {joinUrl && (
-              <QRCodeSVG
-                value={joinUrl}
-                size={72}
-                bgColor="#ffffff"
-                fgColor="#0a0a0f"
-                className="shrink-0 rounded border-2 border-white"
-              />
+              <button
+                type="button"
+                onClick={() => setQrEnlarged(true)}
+                className="shrink-0"
+                title="Tap to enlarge"
+              >
+                <QRCodeSVG
+                  value={joinUrl}
+                  size={72}
+                  bgColor="#ffffff"
+                  fgColor="#0a0a0f"
+                  className="rounded border-2 border-white"
+                />
+              </button>
             )}
             <div className="min-w-0">
               <div className="text-[10px] font-medium uppercase tracking-wide text-white/40">
@@ -638,9 +810,33 @@ export default function HostPage() {
             />
           </div>
 
+          {/* Tap the join QR to blow it up as a centered overlay; tap the
+              backdrop to dismiss. */}
+          {qrEnlarged && joinUrl && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
+              onClick={() => setQrEnlarged(false)}
+            >
+              <div
+                className="rounded-2xl bg-white p-6"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <QRCodeSVG
+                  value={joinUrl}
+                  size={Math.min(360, typeof window !== "undefined" ? window.innerWidth - 96 : 360)}
+                  bgColor="#ffffff"
+                  fgColor="#0a0a0f"
+                />
+              </div>
+            </div>
+          )}
+
           {/* Tabs — stick to the top while the page scrolls on a phone, so you
               can switch tabs without scrolling back up. */}
-          <nav className="sticky top-0 z-10 flex border-b border-white/10 bg-[#0a0a0f] lg:static">
+          <nav
+            data-tour="tabs"
+            className="sticky top-0 z-10 flex border-b border-white/10 bg-[#0a0a0f] lg:static"
+          >
             {(["search", "favorites", "recent", "queue"] as Tab[]).map((t) => (
               <button
                 key={t}
@@ -723,11 +919,13 @@ export default function HostPage() {
             onVolumeChange={changeVolume}
             onSfx={sendSfx}
             onSpin={spinWheel}
+            wheelNames={wheelNames}
+            onWheelNamesChange={setWheelNames}
             suggestedNames={queuedSingers}
             containerClassName="fixed bottom-5 right-5 lg:absolute"
+            dataTour="controls"
           />
         </aside>
-      )}
 
       {/* Transient "added" confirmation */}
       <AnimatePresence>
@@ -750,6 +948,10 @@ export default function HostPage() {
         onSpinStart={() => playSfx("drumroll")}
         onLand={() => playSfx("applause")}
       />
+
+      {/* First-run guided tour + post-update "what's new" (host-only, per-device). */}
+      {showTour && <HostTour steps={tourSteps} onDone={finishTour} />}
+      <WhatsNewModal entries={whatsNew} onDismiss={dismissWhatsNew} />
     </main>
   );
 }

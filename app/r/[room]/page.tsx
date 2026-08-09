@@ -54,6 +54,8 @@ export default function RemotePage() {
     showTarget,
     setShowTarget,
     spinWheel,
+    wheelNames,
+    setWheelNames,
   } = useRoom(code, "remote", { password: pw, userId: session?.user?.id });
 
   // TV volume as last set from THIS phone (0–100). The remote has no player, so
@@ -258,6 +260,8 @@ export default function RemotePage() {
         }}
         onSfx={sendSfx}
         onSpin={spinWheel}
+        wheelNames={wheelNames}
+        onWheelNamesChange={setWheelNames}
         suggestedNames={queuedSingers}
       />
     </main>
