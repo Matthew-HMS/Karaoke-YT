@@ -5,7 +5,7 @@
 // CHANGELOG entry newer than the version this device last saw. Keep the
 // `package.json` "version" field in sync by hand when you bump this.
 
-export const APP_VERSION = "0.2.0";
+export const APP_VERSION = "0.3.0";
 
 export type ChangelogEntry = {
   version: string;
@@ -15,6 +15,14 @@ export type ChangelogEntry = {
 
 // Newest first. Each entry is a short, plain-language list of what changed.
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.3.0",
+    date: "2026-08-09",
+    items: [
+      "🧑‍🏫 The guided tour now walks you through the Queue, Lyrics, and Related views too.",
+      "ℹ️ Replay the tour anytime from the info button next to Sign in.",
+    ],
+  },
   {
     version: "0.2.0",
     date: "2026-08-09",

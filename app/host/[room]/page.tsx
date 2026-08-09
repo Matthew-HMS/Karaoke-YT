@@ -731,46 +731,48 @@ export default function HostPage() {
                 ? `🎤 ${session?.user?.name ?? ""}`
                 : "Singing as Guest — sign in to use your name"}
             </span>
-            {signedIn ? (
+            <div className="flex shrink-0 items-center gap-2">
+              {signedIn ? (
+                <button
+                  type="button"
+                  onClick={() => signOut()}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60 active:scale-95"
+                  title={`Signed in as ${session?.user?.name ?? ""}`}
+                >
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => signIn("google")}
+                  className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black active:scale-95"
+                >
+                  Sign in
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => signOut()}
-                className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60 active:scale-95"
-                title={`Signed in as ${session?.user?.name ?? ""}`}
+                onClick={replayTour}
+                className="rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:text-white active:scale-95"
+                title="Replay the guided tour"
+                aria-label="Replay the guided tour"
               >
-                Sign out
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => signIn("google")}
-                className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black active:scale-95"
-              >
-                Sign in
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={replayTour}
-              className="shrink-0 rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:text-white active:scale-95"
-              title="Replay the guided tour"
-              aria-label="Replay the guided tour"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4"
-                aria-hidden="true"
-              >
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="16" x2="12" y2="12" />
-                <line x1="12" y1="8" x2="12.01" y2="8" />
-              </svg>
-            </button>
+            </div>
           </header>
 
           {/* Join strip: QR + code + password so guests can hop on. */}
