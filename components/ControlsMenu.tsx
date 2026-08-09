@@ -46,11 +46,18 @@ type Props = {
   onSfx: (name: SfxName) => void;
   // Spin the random-singer wheel with the given name list.
   onSpin: (names: string[]) => void;
+  // The shared wheel roster (synced room-wide) and its setter. Editing it here
+  // broadcasts to every phone in the room.
+  wheelNames: string[];
+  onWheelNamesChange: (names: string[]) => void;
   // Names to pre-fill the wheel with on first use (the current queue's singers).
   suggestedNames?: string[];
   // Outer positioning — the remote is fixed to the viewport; the host sits in
   // its (relative) side panel.
   containerClassName?: string;
+  // Optional `data-tour` anchor on the root, so the onboarding tour can point
+  // at the floating menu button.
+  dataTour?: string;
 };
 
 export function ControlsMenu({
@@ -63,39 +70,32 @@ export function ControlsMenu({
   onVolumeChange,
   onSfx,
   onSpin,
+  wheelNames,
+  onWheelNamesChange,
   suggestedNames = [],
   containerClassName = "fixed bottom-5 right-5",
+  dataTour,
 }: Props) {
   const [open, setOpen] = useState(false);
 
-  // The wheel's editable roster. Seeded once from the queue's singers (or a
-  // remembered list), then fully hand-editable.
-  const [wheelNames, setWheelNames] = useState<string[]>([]);
+  // The wheel roster is now shared room-wide (props `wheelNames` /
+  // `onWheelNamesChange`); this component just edits it. Seed the shared roster
+  // from the queue's singers the first time the room's is still empty. A ref
+  // guards against re-seeding after the user deliberately clears every name.
   const [newName, setNewName] = useState("");
   const seededRef = useRef(false);
-  // Load a remembered list on mount; if there isn't one, we'll seed from the
-  // queue's singers as soon as they're available (effect below).
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("wheel-names") || "[]");
-      if (Array.isArray(saved) && saved.length) {
-        setWheelNames(saved);
-        seededRef.current = true;
-      }
-    } catch {
-      /* ignore malformed storage */
+    if (wheelNames.length > 0) {
+      seededRef.current = true; // the room already has a roster
+      return;
     }
-  }, []);
-  // Seed from the current queue's singers the first time they show up.
-  useEffect(() => {
     if (seededRef.current || suggestedNames.length === 0) return;
-    setWheelNames([...new Set(suggestedNames.map((s) => s.trim()).filter(Boolean))]);
-    seededRef.current = true;
-  }, [suggestedNames]);
-  // Persist edits so the roster survives a reload.
-  useEffect(() => {
-    if (seededRef.current) localStorage.setItem("wheel-names", JSON.stringify(wheelNames));
-  }, [wheelNames]);
+    const seed = [...new Set(suggestedNames.map((s) => s.trim()).filter(Boolean))];
+    if (seed.length) {
+      seededRef.current = true;
+      onWheelNamesChange(seed);
+    }
+  }, [wheelNames, suggestedNames, onWheelNamesChange]);
 
   const addName = () => {
     const n = newName.trim();
@@ -103,22 +103,24 @@ export function ControlsMenu({
       setNewName("");
       return;
     }
-    setWheelNames((prev) => [...prev, n]);
-    seededRef.current = true; // an explicit edit means "this is my list now"
+    onWheelNamesChange([...wheelNames, n]);
     setNewName("");
   };
   const removeName = (n: string) =>
-    setWheelNames((prev) => prev.filter((x) => x !== n));
+    onWheelNamesChange(wheelNames.filter((x) => x !== n));
 
   return (
-    <div className={`z-30 flex flex-col items-end gap-2 ${containerClassName}`}>
+    <div
+      data-tour={dataTour}
+      className={`z-30 flex flex-col items-end gap-2 ${containerClassName}`}
+    >
       <AnimatePresence>
         {open && (
           <motion.div
             initial={{ opacity: 0, y: 10, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.9 }}
-            className="flex max-h-[70vh] w-64 flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#1a1a22] p-3 shadow-xl"
+            className="no-scrollbar flex max-h-[70vh] w-64 flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#1a1a22] p-3 shadow-xl"
           >
             {/* Sing & score */}
             <div className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-wide text-white/40">

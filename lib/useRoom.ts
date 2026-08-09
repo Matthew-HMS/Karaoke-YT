@@ -156,5 +156,10 @@ export function useRoom(
       const turns = 4 + Math.floor(Math.random() * 3); // 4–6 full spins
       socket.emit("wheel:spin", { code, names, winner, turns });
     },
+    // Shared wheel roster from room state, plus its setter. Every edit is
+    // broadcast so all phones in the room stay in sync.
+    wheelNames: state?.wheelNames ?? [],
+    setWheelNames: (names: string[]) =>
+      socket.emit("wheel:names", { code, names }),
   };
 }

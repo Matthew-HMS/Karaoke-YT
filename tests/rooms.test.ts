@@ -205,7 +205,7 @@ describe("setPlayerState / toRoomState", () => {
     addToQueue(room, song("A"), "g1");
     const state = toRoomState(room);
     expect(Object.keys(state).sort()).toEqual(
-      ["code", "history", "nowPlaying", "playerState", "queue"].sort()
+      ["code", "history", "nowPlaying", "playerState", "queue", "wheelNames"].sort()
     );
     expect("password" in state).toBe(false);
   });

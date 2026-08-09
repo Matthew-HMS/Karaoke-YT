@@ -29,6 +29,7 @@ import {
   removeFromQueue,
   reorderQueue,
   setPlayerState,
+  setWheelNames,
   toRoomState,
   touchRoom,
 } from "./lib/rooms";
@@ -203,6 +204,15 @@ app.prepare().then(() => {
     socket.on("wheel:spin", ({ code, names, winner, turns }) => {
       if (!Array.isArray(names) || names.length < 2) return;
       io.to(code).emit("wheel:spin", { names, winner, turns });
+    });
+
+    // Shared wheel roster edited on a phone → store it and rebroadcast room
+    // state so every phone in the room shows the same candidate names.
+    socket.on("wheel:names", ({ code, names }) => {
+      const room = getRoom(code);
+      if (!room || !Array.isArray(names)) return;
+      setWheelNames(room, names);
+      broadcastState(code);
     });
 
     // Host: current video ended → advance the queue and resync. With multiple

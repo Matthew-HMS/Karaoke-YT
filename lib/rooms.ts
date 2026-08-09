@@ -20,6 +20,7 @@ type Room = {
   history: QueueItem[]; // played songs (most-recent first), capped, in-memory
   hostSocketId: string | null;
   lastActivityAt: number; // epoch ms; bumped on activity, used to reap idle rooms
+  wheelNames: string[]; // shared random-singer wheel roster (see RoomState)
 };
 
 const MAX_HISTORY = 50;
@@ -49,6 +50,7 @@ export function createRoom(code?: string, password = ""): Room {
     history: [],
     hostSocketId: null,
     lastActivityAt: Date.now(),
+    wheelNames: [],
   };
   rooms.set(room.code, room);
   return room;
@@ -115,7 +117,14 @@ export function toRoomState(room: Room): RoomState {
     nowPlaying: room.nowPlaying,
     playerState: room.playerState,
     history: room.history,
+    wheelNames: room.wheelNames,
   };
+}
+
+// Replace the shared random-singer wheel roster (deduped, trimmed, capped).
+export function setWheelNames(room: Room, names: string[]): void {
+  const clean = [...new Set(names.map((s) => s.trim()).filter(Boolean))];
+  room.wheelNames = clean.slice(0, 24);
 }
 
 export function addToQueue(

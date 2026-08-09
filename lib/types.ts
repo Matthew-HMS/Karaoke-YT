@@ -42,6 +42,9 @@ export type RoomState = {
   nowPlaying: QueueItem | null;
   playerState: PlayerState;
   history: QueueItem[]; // songs already played in THIS room, most-recent first
+  // Shared random-singer wheel roster, so every phone in the room edits and
+  // sees the SAME candidate names (not a per-device localStorage list).
+  wheelNames: string[];
 };
 
 export type PlayerCommand =
@@ -95,6 +98,9 @@ export interface ClientToServerEvents {
     winner: number;
     turns: number;
   }) => void;
+  // Replace the shared wheel roster; the server stores it and rebroadcasts
+  // room:state so every phone in the room converges on the same names.
+  "wheel:names": (payload: { code: string; names: string[] }) => void;
 }
 
 export interface ServerToClientEvents {
