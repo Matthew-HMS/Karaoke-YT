@@ -731,15 +731,6 @@ export default function HostPage() {
                 ? `🎤 ${session?.user?.name ?? ""}`
                 : "Singing as Guest — sign in to use your name"}
             </span>
-            <button
-              type="button"
-              onClick={replayTour}
-              className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-white/60 transition hover:text-white active:scale-95"
-              title="Replay the guided tour"
-              aria-label="Replay the guided tour"
-            >
-              ?
-            </button>
             {signedIn ? (
               <button
                 type="button"
@@ -758,6 +749,28 @@ export default function HostPage() {
                 Sign in
               </button>
             )}
+            <button
+              type="button"
+              onClick={replayTour}
+              className="shrink-0 rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:text-white active:scale-95"
+              title="Replay the guided tour"
+              aria-label="Replay the guided tour"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
+              </svg>
+            </button>
           </header>
 
           {/* Join strip: QR + code + password so guests can hop on. */}
