@@ -35,12 +35,33 @@ kubectl -n karaoke create secret generic singalong-secrets \
   --from-literal=AUTH_GOOGLE_ID='...' \
   --from-literal=AUTH_GOOGLE_SECRET='...' \
   --from-literal=YOUTUBE_API_KEY='...' \
-  --from-literal=REFERENCE_INGEST_TOKEN="$(openssl rand -hex 24)"
+  --from-literal=REFERENCE_INGEST_TOKEN="$(openssl rand -hex 24)" \
+  --from-literal=ORCAROUTER_API_KEY='sk-orca-...,sk-orca-...' \
+  --from-literal=ORCAROUTER_PAID_KEY='sk-orca-...' \
+  --from-literal=AI_FREE_LIMIT='5' \
+  --from-literal=AI_BYPASS_SECRET='...'
 ```
 
 > `REFERENCE_INGEST_TOKEN` authenticates the off-cluster target-pitch worker (see
 > "Off-cluster target-pitch worker" below). Generate a random one and give the
 > **same** value to the worker.
+>
+> **AI (OrcaRouter) keys are server-only** — they live in this Secret and are
+> never sent to the browser. `ORCAROUTER_API_KEY` is the free pool (comma-separate
+> several keys to multiply the ~50/day each); `ORCAROUTER_PAID_KEY` is the credited
+> fallback used only when the free pool is exhausted (≈$0.0003/song on
+> `deepseek/deepseek-v4-flash`, enabled on that key's token scope). Both optional:
+> omit them and the AI features simply stay off. To add these to an **existing**
+> Secret without recreating it:
+>
+> ```bash
+> kubectl -n karaoke patch secret singalong-secrets --type=merge -p "{\"stringData\":{
+>   \"ORCAROUTER_API_KEY\":\"sk-orca-...,sk-orca-...\",
+>   \"ORCAROUTER_PAID_KEY\":\"sk-orca-...\",
+>   \"AI_FREE_LIMIT\":\"5\",
+>   \"AI_BYPASS_SECRET\":\"...\"}}"
+> kubectl -n karaoke rollout restart deployment/singalong   # pods re-read the Secret
+> ```
 
 ### 3. GHCR image pull
 
@@ -191,8 +212,8 @@ non-walled IP (home / school / uni) generates them and POSTs them back.
 ```bash
 sudo apt-get update && sudo apt-get install -y ffmpeg
 python3 -m pip install -U yt-dlp   # or the standalone binary on PATH
-git clone https://github.com/<owner>/karaoke-yt.git && cd karaoke-yt
-npm ci
+git clone https://github.com/Matthew-HMS/Karaoke-YT.git && cd Karaoke-YT
+npm ci   # tsx comes from devDependencies, so don't use --omit=dev
 
 REFERENCE_BASE_URL="https://sho-karaoke.duckdns.org" \
 REFERENCE_INGEST_TOKEN="<same token as the cluster Secret>" \
@@ -209,13 +230,16 @@ survives reboots:
 Description=SingAlong target-pitch worker
 After=network-online.target
 [Service]
-WorkingDirectory=/home/USER/karaoke-yt
+# Absolute path of YOUR checkout — clone it wherever you like, but this must
+# point at it: the worker imports `@/lib/pitch`, which only resolves from the
+# repo root. `User` must be whoever owns that directory.
+WorkingDirectory=/absolute/path/to/Karaoke-YT
+User=SOMEUSER
 Environment=REFERENCE_BASE_URL=https://sho-karaoke.duckdns.org
 Environment=REFERENCE_INGEST_TOKEN=REPLACE_WITH_TOKEN
 ExecStart=/usr/bin/npx tsx scripts/generate-worker.ts
 Restart=always
 RestartSec=10
-User=USER
 [Install]
 WantedBy=multi-user.target
 ```
@@ -223,6 +247,39 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable --now singalong-worker
 journalctl -u singalong-worker -f    # watch it work
 ```
+
+### Which box is the worker running on?
+
+**Nothing in this repo records that, by design.** The link is one-way: the worker
+polls the cluster and proves itself with `REFERENCE_INGEST_TOKEN`, so the server
+never connects *to* the worker and has no reason to store its address. That is
+also why the worker can sit behind campus NAT with no port forwarding, and why
+its IP changing breaks nothing.
+
+The flip side is that it's easy to forget which machine it is. To rediscover it:
+
+```bash
+# Candidates you can reach (the worker is some box with a non-walled IP):
+grep -A1 '^Host ' ~/.ssh/config
+
+# Ask each candidate whether it's the one:
+ssh <host> 'systemctl is-active singalong-worker; pgrep -af generate-worker'
+
+# Once found, the authoritative paths/env live in the unit, not in this file:
+ssh <host> 'systemctl cat singalong-worker'
+ssh <host> 'journalctl -u singalong-worker -n 50 --no-pager'
+```
+
+From the cluster side, whatever address hits `GET /api/reference/pending` every
+~15 s in the nginx access log is the worker.
+
+Keep the actual hostname/IP in your own notes — **this repo is public**, so don't
+commit it here.
+
+> **If target lines stop appearing** while the app itself is healthy, suspect the
+> worker before the cluster: songs will queue up in `/api/reference/pending`
+> forever and the app silently falls back to self-tune scoring. `systemctl status
+> singalong-worker` on the worker box is the first check.
 
 If the worker box's IP is *also* walled, give its yt-dlp cookies too (the same
 `--cookies` trick) — but a residential/campus IP usually isn't. To fall back to

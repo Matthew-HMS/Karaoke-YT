@@ -1,10 +1,11 @@
 "use client";
 
 // The phone/host floating controls menu: one button that opens a panel with
-// Sing (mic pitch + name), the room's Target-line toggle, and Reactions (sound
-// effects). Shared by BOTH the remote and the host (a host can be a phone too),
-// so the two stay identical. The mic itself lives in a page-level `useMicPitch`
-// hook passed in, so closing the panel never stops an in-progress take.
+// Sing (mic pitch + name) and Reactions (sound effects). Shared by BOTH the
+// remote and the host (a host can be a phone too), so the two stay identical.
+// (The Target-line toggle moved to the ⚙ Settings overlay.) The mic itself
+// lives in a page-level `useMicPitch` hook passed in, so closing the panel
+// never stops an in-progress take.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
@@ -37,8 +38,6 @@ type Props = {
   mic: MicPitch;
   name: string;
   onNameChange: (name: string) => void;
-  showTarget: boolean;
-  onToggleTarget: () => void;
   // TV volume (0–100) + its setter. Host-only (the TV's own speaker); omit on the
   // remote to hide the Volume section entirely.
   volume?: number;
@@ -64,8 +63,6 @@ export function ControlsMenu({
   mic,
   name,
   onNameChange,
-  showTarget,
-  onToggleTarget,
   volume,
   onVolumeChange,
   onSfx,
@@ -161,33 +158,7 @@ export function ControlsMenu({
                 </span>
               )}
             </button>
-            {/* Show/hide the blue "target" pitch line on the TV (synced room-wide). */}
-            <button
-              type="button"
-              aria-label={
-                showTarget
-                  ? "Hide the target pitch line on the TV"
-                  : "Show the target pitch line on the TV"
-              }
-              onClick={onToggleTarget}
-              className="mt-2 flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-2 transition active:scale-95"
-            >
-              <span className="flex items-center gap-2 text-sm font-medium">
-                <span className="h-2.5 w-2.5 rounded-full bg-[rgb(130,170,255)]" />
-                Target line
-              </span>
-              <span
-                className={`relative h-6 w-11 shrink-0 rounded-full transition ${
-                  showTarget ? "bg-fuchsia-500" : "bg-white/20"
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-                    showTarget ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </span>
-            </button>
+            {/* The Target-line toggle now lives in the ⚙ Settings overlay. */}
             {mic.error && (
               <p className="mt-1.5 px-1 text-xs font-medium text-red-400">
                 {mic.error}

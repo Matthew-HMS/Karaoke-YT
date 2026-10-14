@@ -5,7 +5,7 @@
 
 import Database from "better-sqlite3";
 import path from "path";
-import type { LyricsResult } from "@/lib/types";
+import type { FuriganaSegment, LyricsResult } from "@/lib/types";
 
 export type SongMeta = {
   videoId: string;
@@ -253,6 +253,106 @@ const clearRejectedLyricsStmt = db.prepare(
 
 export function clearRejectedLyrics(videoId: string): void {
   clearRejectedLyricsStmt.run(videoId);
+}
+
+// ---- Romaji cache (Japanese lyrics romanization) ----
+// One row per video: the Hepburn romaji for that song's lyric lines, aligned
+// 1:1 with the lyrics we cached. Generated once via the LLM (see lib/romanize.ts)
+// and reused forever, so a song is only ever romanised on the first request.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS romaji (
+    videoId   TEXT PRIMARY KEY,
+    data      TEXT NOT NULL,
+    fetchedAt INTEGER NOT NULL
+  );
+`);
+
+const getRomajiStmt = db.prepare(`SELECT data FROM romaji WHERE videoId = ?`);
+
+export function getCachedRomaji(videoId: string): string[] | null {
+  const row = getRomajiStmt.get(videoId) as { data: string } | undefined;
+  if (!row) return null;
+  return JSON.parse(row.data) as string[];
+}
+
+const putRomajiStmt = db.prepare(
+  `INSERT INTO romaji (videoId, data, fetchedAt)
+   VALUES (@videoId, @data, @fetchedAt)
+   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt`
+);
+
+export function putCachedRomaji(videoId: string, lines: string[]): void {
+  putRomajiStmt.run({
+    videoId,
+    data: JSON.stringify(lines),
+    fetchedAt: Date.now(),
+  });
+}
+
+// ---- Furigana cache (hiragana readings above Japanese lyrics) ----
+// Like the romaji cache, but `data` is a JSON FuriganaSegment[][] (one segment
+// array per lyric line). Generated once via the LLM (see lib/furigana.ts).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS furigana (
+    videoId   TEXT PRIMARY KEY,
+    data      TEXT NOT NULL,
+    fetchedAt INTEGER NOT NULL
+  );
+`);
+
+const getFuriganaStmt = db.prepare(`SELECT data FROM furigana WHERE videoId = ?`);
+
+export function getCachedFurigana(videoId: string): FuriganaSegment[][] | null {
+  const row = getFuriganaStmt.get(videoId) as { data: string } | undefined;
+  if (!row) return null;
+  return JSON.parse(row.data) as FuriganaSegment[][];
+}
+
+const putFuriganaStmt = db.prepare(
+  `INSERT INTO furigana (videoId, data, fetchedAt)
+   VALUES (@videoId, @data, @fetchedAt)
+   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt`
+);
+
+export function putCachedFurigana(
+  videoId: string,
+  lines: FuriganaSegment[][]
+): void {
+  putFuriganaStmt.run({
+    videoId,
+    data: JSON.stringify(lines),
+    fetchedAt: Date.now(),
+  });
+}
+
+// ---- AI free-use quota ----
+// How many AI calls an identity has spent on the SERVER's shared OrcaRouter key.
+// `id` is the signed-in user id when available, else a per-device guest id.
+// Only real model calls (cache misses) bump this; a user's OWN key and the
+// owner's bypass secret aren't counted (see lib/aiCall.ts). Survives restarts so
+// the limit is per-account/per-device, not per-process.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_usage (
+    id      TEXT PRIMARY KEY,
+    count   INTEGER NOT NULL DEFAULT 0,
+    firstAt INTEGER NOT NULL,
+    lastAt  INTEGER NOT NULL
+  );
+`);
+
+const aiUsageStmt = db.prepare(`SELECT count FROM ai_usage WHERE id = ?`);
+export function aiUsageCount(id: string): number {
+  const row = aiUsageStmt.get(id) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+const bumpAiUsageStmt = db.prepare(
+  `INSERT INTO ai_usage (id, count, firstAt, lastAt)
+   VALUES (@id, 1, @at, @at)
+   ON CONFLICT(id) DO UPDATE SET count = count + 1, lastAt = @at`
+);
+export function bumpAiUsage(id: string): void {
+  bumpAiUsageStmt.run({ id, at: Date.now() });
 }
 
 // ---- Reference pitch contour cache (Tier 3 karaoke target line) ----

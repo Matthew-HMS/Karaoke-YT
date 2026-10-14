@@ -13,6 +13,7 @@ import { LyricsPanel } from "@/components/LyricsPanel";
 import { isValidPassword, normalizePassword } from "@/lib/code";
 import { formatTime } from "@/lib/format";
 import { detectRegion } from "@/lib/region";
+import { useSettings } from "@/lib/useSettings";
 import type { PlayerCommand, QueueItem, SfxName } from "@/lib/types";
 
 export type { SearchResult } from "@/lib/youtube";
@@ -117,6 +118,51 @@ export function SongRow({
 // fixed at the top while ONLY the results below them scroll. This deterministic
 // layout replaces a `position: sticky` bar, which behaved badly inside the
 // nested flex/overflow containers (gaps + click-through).
+// Friendly message for an AI response failure, so the user knows whether to wait
+// (rate limit) or add their own key (free quota used up).
+// Parse a response body as JSON, but never throw: an error page (HTML, e.g. a
+// proxy 502/504 or an unhandled 500) or an empty body yields {} instead of the
+// cryptic "Unexpected token '<'" crash, so aiErrorMessage can still show a hint.
+async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
+  try {
+    const data = await res.json();
+    return data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function aiErrorMessage(
+  status: number,
+  data: { error?: unknown; code?: unknown; limit?: unknown },
+  freeLimit: number
+): string {
+  if (data.code === "bad_key") {
+    return "That OrcaRouter key was rejected — check it in ⚙ Settings, or clear it to use the free AI. (If you set a Model, make sure your key has access to it.)";
+  }
+  if (data.code === "no_credits") {
+    return "That model needs credits on your OrcaRouter key. Add credits, or clear the Model field in ⚙ Settings to use the free one.";
+  }
+  if (data.code === "free_exhausted") {
+    return "The free AI is used up for today. Add credits to the key (or paste your own key) in ⚙ Settings to keep going.";
+  }
+  if (data.code === "quota_exceeded") {
+    const n = typeof data.limit === "number" ? data.limit : freeLimit;
+    return `You've used your ${n} free AI songs. Add your own OrcaRouter key in ⚙ Settings to keep going.`;
+  }
+  if (data.code === "slow_model") {
+    return "That model was too slow and timed out. Pick a faster model in ⚙ Settings (e.g. qwen/qwen3.7-flash or deepseek/deepseek-v4-flash) — reasoning models like qwen3.5-flash are slow.";
+  }
+  if (status === 429) {
+    return "AI is busy right now — too many requests. Try again in a moment.";
+  }
+  // 5xx (incl. a proxy/gateway HTML page that left `data` empty) → transient.
+  if (status >= 500) {
+    return "AI is unavailable right now — please try again in a moment.";
+  }
+  return typeof data.error === "string" && data.error ? data.error : "AI search failed";
+}
+
 export function SearchTab({
   onAdd,
   onAddMany,
@@ -145,6 +191,17 @@ export function SearchTab({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Mood / AI search. `aiFor` holds the prompt behind the current results (so we
+  // can label them "AI picks for …"); empty means the results are a normal
+  // search. Settings gives us the user's key (via authHeaders) + whether AI is
+  // available at all (hides the ✨ button when not).
+  const settings = useSettings();
+  const [aiFor, setAiFor] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiMoreLoading, setAiMoreLoading] = useState(false);
+  // Hidden once a "Load more" brings back nothing new (the model's run dry).
+  const [aiDone, setAiDone] = useState(false);
 
   // "Discover" feed shown before any search: personalized recommendations when
   // signed in ("For you"), otherwise the anonymous top-hits chart.
@@ -218,7 +275,10 @@ export function SearchTab({
         return;
       }
       if (append) setLoadingMore(true);
-      else setLoading(true);
+      else {
+        setLoading(true);
+        setAiFor(""); // a literal search replaces any AI result set
+      }
       setError(null);
       try {
         const region = detectRegion();
@@ -278,6 +338,76 @@ export function SearchTab({
   };
   const loadMore = () => runSearch(lastQuery, limit + 20, karaokeOnly, true);
 
+  // Mood / AI search: send the SAME box text as a natural-language prompt. The
+  // server turns it into real songs (resolved through the normal search, so no
+  // dead links). Results land in `results`, labelled via `aiFor`.
+  const runAi = async () => {
+    const prompt = q.trim();
+    if (!prompt) return;
+    scrollToTop();
+    setAiLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ai/suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...settings.authHeaders() },
+        body: JSON.stringify({ prompt }),
+      });
+      const data = await readJsonSafe(res);
+      if (!res.ok) throw new Error(aiErrorMessage(res.status, data, settings.freeLimit));
+      const songs = (data.results ?? []) as SearchResult[];
+      setResults(songs);
+      setAiFor(prompt);
+      setAiDone(songs.length === 0);
+      setLastQuery(""); // not a literal search — keeps the normal Load more / karaoke off
+      setHasMore(false);
+      if (songs.length === 0) setError("No songs matched that — try rephrasing.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI search failed");
+    } finally {
+      setAiLoading(false);
+      settings.refreshStatus(); // keep the free-use counter fresh
+    }
+  };
+
+  // "Load more" for an AI result set: ask for DIFFERENT songs, telling the model
+  // which titles we've already shown, then append only genuinely new videos.
+  const loadMoreAi = async () => {
+    if (!aiFor) return;
+    setAiMoreLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ai/suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...settings.authHeaders() },
+        body: JSON.stringify({ prompt: aiFor, exclude: results.map((r) => r.title) }),
+      });
+      const data = await readJsonSafe(res);
+      if (!res.ok) throw new Error(aiErrorMessage(res.status, data, settings.freeLimit));
+      const incoming = (data.results ?? []) as SearchResult[];
+      setResults((prev) => {
+        const have = new Set(prev.map((r) => r.videoId));
+        const added = incoming.filter((r) => !have.has(r.videoId));
+        if (added.length === 0) setAiDone(true);
+        return [...prev, ...added];
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI search failed");
+    } finally {
+      setAiMoreLoading(false);
+      settings.refreshStatus(); // keep the free-use counter fresh
+    }
+  };
+
+  // Clear an AI result set and return to the discover feed.
+  const clearAi = () => {
+    setAiFor("");
+    setAiDone(false);
+    setResults([]);
+    setLastQuery("");
+    setQ("");
+  };
+
   const addPlaylist = async () => {
     setLoading(true);
     setError(null);
@@ -324,8 +454,8 @@ export function SearchTab({
   );
 
   // Before any search (and when not pasting a link) we show the discover feed
-  // instead of an empty list.
-  const browsing = !lastQuery && !looksLikeUrl;
+  // instead of an empty list. AI results (aiFor) also count as "not browsing".
+  const browsing = !lastQuery && !aiFor && !looksLikeUrl;
 
   return (
     <div
@@ -356,6 +486,19 @@ export function SearchTab({
               className="shrink-0 rounded-xl bg-fuchsia-500 px-4 font-bold disabled:opacity-40 active:scale-95"
             >
               Search
+            </button>
+          )}
+          {/* Ask AI — sends the same text as a natural-language prompt. Shown
+              only when AI is available (server key or the user pasted one). */}
+          {!looksLikeUrl && settings.aiAvailable && (
+            <button
+              type="button"
+              onClick={runAi}
+              disabled={aiLoading || !q.trim()}
+              title="Describe a vibe — e.g. upbeat mandarin party songs"
+              className="shrink-0 rounded-xl bg-white/10 px-3 font-bold text-fuchsia-200 disabled:opacity-40 active:scale-95"
+            >
+              ✨ Ask AI
             </button>
           )}
         </div>
@@ -391,6 +534,9 @@ export function SearchTab({
         {error && <p className="mt-3 text-sm text-amber-400">{error}</p>}
         {loading && !looksLikeUrl && (
           <p className="mt-3 text-sm text-white/40">Searching…</p>
+        )}
+        {aiLoading && (
+          <p className="mt-3 text-sm text-fuchsia-200/70">✨ Picking songs…</p>
         )}
       </div>
 
@@ -443,17 +589,46 @@ export function SearchTab({
             )}
           </>
         ) : (
-          <ul className="space-y-2">
-            {displayed.map((r) => (
-              <SongRow
-                key={r.videoId}
-                song={r}
-                onAdd={onAdd}
-                onStar={onStar}
-                starred={starred.has(r.videoId)}
-              />
-            ))}
-          </ul>
+          <>
+            {/* AI result banner — makes mood picks read differently from a
+                normal search, with a way back to the discover feed. */}
+            {aiFor && (
+              <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                <h2 className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-fuchsia-300">
+                  ✨ AI picks for “{aiFor}”
+                </h2>
+                <button
+                  type="button"
+                  onClick={clearAi}
+                  className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[11px] text-white/50 active:scale-90"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+            <ul className="space-y-2">
+              {displayed.map((r) => (
+                <SongRow
+                  key={r.videoId}
+                  song={r}
+                  onAdd={onAdd}
+                  onStar={onStar}
+                  starred={starred.has(r.videoId)}
+                />
+              ))}
+            </ul>
+            {/* Load more AI picks — asks for different songs than those shown. */}
+            {aiFor && !aiDone && displayed.length > 0 && (
+              <button
+                type="button"
+                onClick={loadMoreAi}
+                disabled={aiMoreLoading}
+                className="mt-3 w-full rounded-xl bg-white/10 py-3 font-semibold active:scale-95 disabled:opacity-50"
+              >
+                {aiMoreLoading ? "✨ Finding more…" : "✨ Load more"}
+              </button>
+            )}
+          </>
         )}
 
         {hasMore && !looksLikeUrl && displayed.length > 0 && (

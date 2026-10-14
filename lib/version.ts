@@ -5,7 +5,7 @@
 // CHANGELOG entry newer than the version this device last saw. Keep the
 // `package.json` "version" field in sync by hand when you bump this.
 
-export const APP_VERSION = "0.3.0";
+export const APP_VERSION = "0.4.0";
 
 export type ChangelogEntry = {
   version: string;
@@ -15,6 +15,17 @@ export type ChangelogEntry = {
 
 // Newest first. Each entry is a short, plain-language list of what changed.
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.4.0",
+    date: "2026-10-15",
+    items: [
+      "✨ Ask AI in the Search tab — describe a vibe (\"upbeat mandarin party songs\") to get real, queueable picks, with Load more.",
+      "🇯🇵 Japanese reading aid for lyrics — furigana (hiragana above kanji) or romaji, in the new ⚙ Settings.",
+      "🧹 Smarter lyrics matching for messy video titles.",
+      "⚙ New Settings panel — set your AI key and toggle features (the Target line toggle moved here).",
+      "🔑 5 free AI uses per person on the shared key; after that, paste your own free OrcaRouter key (one tap to get one).",
+    ],
+  },
   {
     version: "0.3.0",
     date: "2026-08-09",

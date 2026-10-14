@@ -9,6 +9,8 @@
 import type { LyricLine, LyricsResult } from "@/lib/types";
 import { getCachedLyrics, putCachedLyrics, rejectLyrics } from "@/lib/db";
 import { formatTime } from "@/lib/format";
+import type { AiAccess } from "@/lib/llm";
+import { aiJSON } from "@/lib/aiCall";
 
 // How long to trust a cached MISS before trying the network again. Hits are
 // cached forever; misses expire so a song that gains lyrics later can be found.
@@ -377,13 +379,53 @@ async function fetchMusixmatch(
   }
 }
 
+// ---- LLM title cleanup (smart fallback) ----
+//
+// Our regex parseTitle handles common shapes, but odd titles ("周杰伦新歌!!
+// 【告白氣球】完整版 lyrics reaction") still slip through and cause a lyrics
+// miss. When everything else has missed AND the caller opted in, ask the LLM for
+// a clean { artist, track } and try once more. This fires only on a miss (rare),
+// and its result is cached like any other, so it never re-runs for the same song.
+
+const AI_TITLE_SYSTEM = `You clean messy YouTube music titles into the underlying song.
+Reply with ONLY a JSON object {"artist": string, "track": string}, no prose, no code fences.
+Use the song's real primary artist and title (original script is fine). Drop noise like "Official MV", "lyrics", "4K", featured-artist credits, reaction/cover tags. If unsure of the artist, set artist to "".`;
+
+async function llmParseTitle(
+  rawTitle: string,
+  access: AiAccess,
+  clientId: string
+): Promise<{ artist?: string; track: string } | null> {
+  try {
+    const got = await aiJSON<{ artist?: unknown; track?: unknown }>({
+      access,
+      clientId,
+      messages: [
+        { role: "system", content: AI_TITLE_SYSTEM },
+        { role: "user", content: rawTitle },
+      ],
+    });
+    const track = typeof got.track === "string" ? got.track.trim() : "";
+    if (!track) return null;
+    const artist = typeof got.artist === "string" ? got.artist.trim() : "";
+    return { artist: artist || undefined, track };
+  } catch {
+    return null; // rate-limited / bad reply / no key — just skip the fallback
+  }
+}
+
 // ---- Orchestrator (with SQLite cache) ----
 
 export async function getLyrics(
   videoId: string,
   rawTitle: string,
   durationSec: number,
-  opts: { force?: boolean } = {}
+  opts: {
+    force?: boolean;
+    ai?: boolean;
+    access?: AiAccess | null;
+    clientId?: string;
+  } = {}
 ): Promise<LyricsResult | null> {
   const cached = getCachedLyrics(videoId);
 
@@ -407,6 +449,27 @@ export async function getLyrics(
   }
   if (!result) {
     result = await fetchMusixmatch(artist, track, durationSec, rejected);
+  }
+
+  // Smart-cleanup fallback: only when opted in, still missing, and AI is
+  // available. A quota/rate-limit failure inside llmParseTitle just returns null
+  // (cleanup silently skipped) so the lyrics request never fails over it.
+  if (!result && opts.ai && opts.access) {
+    const clean = await llmParseTitle(rawTitle, opts.access, opts.clientId ?? "anon");
+    // Only worth retrying if the LLM's guess differs from our regex parse.
+    if (
+      clean &&
+      (clean.track !== track || (clean.artist ?? "") !== (artist ?? ""))
+    ) {
+      try {
+        result = await fetchLrclib(clean.artist, clean.track, durationSec, rejected);
+      } catch {
+        result = null;
+      }
+      if (!result) {
+        result = await fetchMusixmatch(clean.artist, clean.track, durationSec, rejected);
+      }
+    }
   }
 
   putCachedLyrics(videoId, result);

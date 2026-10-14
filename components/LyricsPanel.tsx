@@ -7,7 +7,12 @@
 // playback position the rest of the queue UI already has, so no extra wiring.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { LyricLine } from "@/lib/types";
+import type { FuriganaSegment, LyricLine } from "@/lib/types";
+import { useSettings } from "@/lib/useSettings";
+
+// Kana (hiragana/katakana) ⇒ Japanese. Inlined here (not imported from
+// lib/romanize, which pulls in the SQLite db) so this stays a client module.
+const KANA_RE = /[ぁ-ゖ゠-ヿｦ-ﾝ]/;
 
 // Pretty names for the lyrics provider shown in the header.
 const SOURCE_LABELS: Record<string, string> = {
@@ -44,8 +49,20 @@ export function LyricsPanel({
   signedIn,
   isHost,
 }: Props) {
+  const settings = useSettings();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState(false);
+  // Japanese reading aids, aligned 1:1 with the lyric lines (null = none / not
+  // Japanese / not requested). Only one is populated, per the settings mode.
+  const [romaji, setRomaji] = useState<string[] | null>(null);
+  const [furigana, setFurigana] = useState<FuriganaSegment[][] | null>(null);
+  // A small hint shown when the reading aid can't load (rate limit / quota).
+  const [readingNote, setReadingNote] = useState<string | null>(null);
+  // Bumped by the "Retry" button to re-run the reading fetch for the SAME song /
+  // mode / model — e.g. after a timeout, or after switching to a faster model.
+  // (Re-selecting the same reading mode doesn't change a dep, so without this
+  // there'd be no way to retry a failed reading.)
+  const [readingRetry, setReadingRetry] = useState(0);
   // Manual sync nudge (seconds). Music videos often have an intro/outro the
   // studio-timed lyrics don't account for, so let the user shift the timing.
   // Positive = lyrics wait longer (delay); negative = lyrics run earlier. The
@@ -56,7 +73,7 @@ export function LyricsPanel({
   const [confirmReport, setConfirmReport] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const activeRef = useRef<HTMLParagraphElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // (Re)fetch whenever the song changes — or after a report (reloadKey).
@@ -66,13 +83,21 @@ export function LyricsPanel({
     setError(false);
     setOffset(0);
     setConfirmReport(false);
+    setRomaji(null);
+    setFurigana(null);
     const params = new URLSearchParams({
       videoId,
       title,
       duration: String(Math.round(durationSec)),
     });
+    // Smart lyrics cleanup: let the server try an LLM title parse on a miss.
+    const useAi = settings.smartCleanup && settings.aiAvailable;
+    if (useAi) params.set("ai", "1");
     const controller = new AbortController();
-    fetch(`/api/lyrics?${params}`, { signal: controller.signal })
+    fetch(`/api/lyrics?${params}`, {
+      signal: controller.signal,
+      headers: useAi ? settings.authHeaders() : undefined,
+    })
       .then((r) => r.json())
       .then((d) => {
         if (!active) return;
@@ -84,7 +109,70 @@ export function LyricsPanel({
       active = false;
       controller.abort();
     };
-  }, [videoId, title, durationSec, reloadKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId, title, durationSec, reloadKey, settings.smartCleanup, settings.aiAvailable, settings.orcaKey]);
+
+  // Japanese reading aid: when a mode is picked and the lyrics are Japanese,
+  // fetch romaji (Latin, under each line) or furigana (hiragana, over kanji).
+  // Runs after lyrics load; both are cached server-side per video.
+  useEffect(() => {
+    setRomaji(null);
+    setFurigana(null);
+    setReadingNote(null);
+    const mode = settings.jpReading;
+    if (mode === "off" || !settings.aiAvailable || !data?.found) return;
+    const texts = (data.lines ?? []).map((l) => l.text);
+    if (!texts.some((t) => KANA_RE.test(t))) return; // not Japanese → skip
+    let active = true;
+    const url = mode === "furigana" ? "/api/furigana" : "/api/romanize";
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...settings.authHeaders() },
+      body: JSON.stringify({ videoId, lines: texts }),
+    })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+      .then(({ status, body }) => {
+        if (!active) return;
+        const d = body as {
+          furigana?: unknown;
+          romaji?: unknown;
+          code?: unknown;
+          limit?: unknown;
+        };
+        if (mode === "furigana" && Array.isArray(d.furigana)) {
+          setFurigana(d.furigana as FuriganaSegment[][]);
+        } else if (mode === "romaji" && Array.isArray(d.romaji)) {
+          setRomaji(d.romaji as string[]);
+        } else if (d.code === "bad_key") {
+          setReadingNote("That OrcaRouter key was rejected — check it in ⚙ Settings (or clear it to use the free AI).");
+        } else if (d.code === "no_credits") {
+          setReadingNote("That model needs credits on your key — clear the Model field in ⚙ Settings for the free one.");
+        } else if (d.code === "free_exhausted") {
+          setReadingNote("Free AI is used up for today — add credits or your own key in ⚙ Settings.");
+        } else if (status === 402) {
+          const n = typeof d.limit === "number" ? d.limit : settings.freeLimit;
+          setReadingNote(`Free AI limit (${n}) reached — add your own key in ⚙ Settings.`);
+        } else if (d.code === "slow_model") {
+          setReadingNote("That model was too slow (timed out). Pick a faster one in ⚙ Settings — e.g. qwen/qwen3.7-flash or deepseek/deepseek-v4-flash.");
+        } else if (status === 429) {
+          setReadingNote("AI is busy — reading unavailable right now. Try again shortly.");
+        } else if (status >= 400) {
+          // Any other failure (e.g. a 502) — don't fail silently.
+          setReadingNote("Couldn't load the reading right now.");
+        }
+        settings.refreshStatus(); // a reading may have spent a free use
+      })
+      .catch(() => {
+        if (active) setReadingNote("Couldn't load the reading right now.");
+      });
+    return () => {
+      active = false;
+    };
+    // Re-fetch when the key/model change too, so pasting your own key (or
+    // changing the model) immediately retries the reading for the current song;
+    // readingRetry lets the user force a retry with no change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId, data, settings.jpReading, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
 
   // Nudge the sync offset and persist it (debounced) so it sticks next time.
   const nudge = (delta: number) => {
@@ -235,6 +323,20 @@ export function LyricsPanel({
           )}
         </div>
       </div>
+      {/* Reading-aid hint (timeout / rate limit / free-quota used up), with a
+          Retry so a failed reading can be re-attempted without toggling off/on. */}
+      {readingNote && (
+        <p className="mb-1 rounded-lg bg-white/5 px-2 py-1 text-center text-[11px] text-amber-300/80">
+          {readingNote}{" "}
+          <button
+            type="button"
+            onClick={() => setReadingRetry((k) => k + 1)}
+            className="font-semibold text-amber-200 underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </p>
+      )}
       <div
         ref={scrollRef}
         className="no-scrollbar relative min-h-0 flex-1 overflow-y-auto text-center"
@@ -262,11 +364,16 @@ export function LyricsPanel({
           lines.map((line, i) => {
             const isActive = synced && i === activeIndex;
             const isPast = synced && activeIndex >= 0 && i < activeIndex;
+            const rj = romaji?.[i];
+            const furi = furigana?.[i];
             return (
+              <div key={i} ref={isActive ? activeRef : undefined}>
               <p
-                key={i}
-                ref={isActive ? activeRef : undefined}
-                className={`py-1.5 leading-snug transition-colors duration-200 ${
+                className={`pt-1.5 leading-snug transition-colors duration-200 ${
+                  rj ? "pb-0" : "pb-1.5"
+                } ${
+                  furi ? "[&_rt]:text-[0.5em] [&_rt]:font-normal [&_rt]:text-fuchsia-200/90 " : ""
+                }${
                   isActive
                     ? "text-2xl font-bold text-white"
                     : isPast
@@ -276,8 +383,34 @@ export function LyricsPanel({
                     : "text-lg text-white/75"
                 }`}
               >
-                {line.text || " "}
+                {furi
+                  ? furi.map((s, k) =>
+                      s.r ? (
+                        <ruby key={k}>
+                          {s.t}
+                          <rt>{s.r}</rt>
+                        </ruby>
+                      ) : (
+                        <span key={k}>{s.t}</span>
+                      )
+                    )
+                  : line.text || " "}
               </p>
+              {/* Romaji under the original line (only when present). */}
+              {rj && (
+                <p
+                  className={`pb-1.5 leading-snug transition-colors duration-200 ${
+                    isActive
+                      ? "text-base font-medium text-fuchsia-200"
+                      : isPast
+                      ? "text-xs text-white/20"
+                      : "text-xs text-white/40"
+                  }`}
+                >
+                  {rj}
+                </p>
+              )}
+              </div>
             );
           })}
       </div>

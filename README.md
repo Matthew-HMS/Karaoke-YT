@@ -10,8 +10,10 @@ instantly **seek to any part** of a song.
 - 📺 **Host screen** — the video stays on the left; a phone-sized panel on the
   right has the **same Search / Faves / Recent / Queue tabs as the remote** (so
   you can browse/queue while watching), playback controls + seek in the Queue
-  tab, a join QR, the **room password**, and a 🎉 reactions button. A footer
-  **volume slider** sets the TV's level. Responsive (stacks on a phone), with a
+  tab, a join QR, the **room password**, and a 🎉 reactions button. The footer's
+  **progress bar is draggable** — tap or drag it (or use the arrow keys) to
+  scrub, and every host screen jumps with you — and a **volume slider** next to
+  it sets the TV's level. Responsive (stacks on a phone), with a
   **fullscreen** toggle for the TV. While a song is playing the host holds a
   **Screen Wake Lock** so a phone-as-host won't dim/lock and pause the embed
   (browsers still pause the video if you switch away from the tab).
@@ -88,7 +90,10 @@ instantly **seek to any part** of a song.
   you hit" line is generated server-side: when a song is queued,
   `lib/reference.ts` pipes `yt-dlp → ffmpeg → lib/pitch.ts` to scan the audio
   into a compact pitch contour (cached in SQLite, ~10–25 s/song, hidden behind
-  the queue, reused forever). The TV draws it as a blue **Target** lane scrolling
+  the queue, reused forever). In production that scan is offloaded to a small
+  worker on a non-walled IP, because YouTube bot-walls datacenter addresses —
+  see [k8s/README.md](k8s/README.md#off-cluster-target-pitch-worker-recommended).
+  The TV draws it as a blue **Target** lane scrolling
   in song-time. **When a contour is ready the score becomes a melody match** —
   the trace turns green only when you hit the *right* note (octave-folded, so any
   octave counts), red when you're on a wrong note even if it's in tune, and the
@@ -106,6 +111,32 @@ instantly **seek to any part** of a song.
   features the first time that device loads the app. The version and changelog
   live in `lib/version.ts` — bump `APP_VERSION` and prepend a `CHANGELOG` entry
   when you ship a user-visible feature (keep `package.json`'s version in sync).
+- 🤖 **AI features (OrcaRouter)** — optional, via an OpenAI-compatible gateway
+  using a **free model**, so they cost nothing (rate-limited, not billed):
+  - ✨ **Mood search** — in the Search tab, type a vibe ("upbeat mandarin party
+    songs", "sad 90s cantonese ballads") and tap **✨ Ask AI**; the model proposes
+    real songs that are resolved through the normal quota-free search (so there
+    are **no dead links**), shown under an "AI picks" header. **Enter** still runs
+    a plain literal search — the two buttons disambiguate intent.
+  - 🇯🇵 **Japanese reading aid** — a **⚙ Settings** mode adds either **furigana**
+    (hiragana **above each kanji**, via `<ruby>`) or Hepburn **romaji** under each
+    line (kana-detected; Chinese is left alone). Cached per-video in SQLite; the
+    furigana output is reconstruction-checked so it can never alter the lyrics.
+  - 🧹 **Smart lyrics cleanup** — when the normal lyrics lookup misses on a messy
+    title, the model extracts a clean `{artist, track}` and retries once, raising
+    the hit-rate. Fires only on a miss; the result is cached like any other.
+  - 🔑 **Keys & free quota** — set `ORCAROUTER_API_KEY` on the **server** (never
+    exposed to the browser) and AI works for everyone, up to `AI_FREE_LIMIT`
+    (default **5**) uses per Google account / per guest device on the shared key.
+    Each free key is ~50 requests/day, so `ORCAROUTER_API_KEY` accepts a
+    **comma-separated pool** of keys and fails over to the next on a 429.
+    After that a user pastes **their own** free key in ⚙ Settings (kept on their
+    device; a ⧉ referral button links out to get one). The deployer can set a
+    private `AI_BYPASS_SECRET` word to use the server key with no limit. Rate
+    limits / quota exhaustion surface as a friendly "try again / add your key"
+    hint; without any key, AI affordances are hidden and the rest works unchanged.
+- ⚙ **Settings overlay** — a per-device settings panel (the ⚙ button) holding the
+  AI key + toggles and the room's **Target-line** toggle.
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
 
 ## Architecture
@@ -165,6 +196,12 @@ Environment (`.env.local`):
   nothing; returns synced lyrics too). Lyrics work without it via LRCLIB alone.
   Override the host with `MUSIXMATCH_RAPIDAPI_HOST` if needed (defaults to
   `musixmatch-lyrics-songs.p.rapidapi.com`).
+- `ORCAROUTER_API_KEY` — *optional* server key that enables the AI features
+  (mood search, romaji, smart lyrics cleanup) for everyone, on a free model.
+  **Server-only — never sent to the browser; do not prefix with `NEXT_PUBLIC_`.**
+  Users can also paste their own key in ⚙ Settings. Optional overrides:
+  `ORCAROUTER_API_BASE_URL` (default `https://api.orcarouter.ai/v1`),
+  `ORCAROUTER_MODEL` (default `orcarouter/free`).
 - Trending (signed-out "Top hits") uses YouTube's **Most Popular** music chart
   via the Data API when `YOUTUBE_API_KEY` is set — quota-cheap (~1 unit/region,
   refreshed hourly). `TRENDING_REGION` (*optional*, default `TW,US,JP`) is a

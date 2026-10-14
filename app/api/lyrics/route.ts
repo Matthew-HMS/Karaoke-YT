@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { getLyrics, reportWrongLyrics } from "@/lib/lyrics";
+import { resolveAccess } from "@/lib/llm";
 import { clearRejectedLyrics, getCachedLyrics, setLyricsOffset } from "@/lib/db";
 
 // Hits SQLite + external lyrics APIs, so Node runtime and never statically
@@ -19,13 +20,28 @@ export async function GET(req: NextRequest) {
   const title = p.get("title")?.trim();
   const duration = Number(p.get("duration")) || 0;
   const force = p.get("refresh") === "1";
+  // `ai=1` (from the client's smart-cleanup toggle) enables the LLM title-cleanup
+  // fallback when the normal lookups miss. Resolve the key/quota policy here; a
+  // quota/rate failure inside getLyrics just skips cleanup (never fails lyrics).
+  const ai = p.get("ai") === "1";
+  const access = ai
+    ? resolveAccess(req.headers.get("x-orca-key"), req.headers.get("x-orca-model"))
+    : null;
 
   if (!videoId || !title) {
     return NextResponse.json({ error: "missing videoId or title" }, { status: 400 });
   }
 
   try {
-    const result = await getLyrics(videoId, title, duration, { force });
+    const session = ai ? await auth() : null;
+    const clientId =
+      session?.user?.id || req.headers.get("x-ai-client")?.trim() || "anon";
+    const result = await getLyrics(videoId, title, duration, {
+      force,
+      ai,
+      access,
+      clientId,
+    });
     const cached = getCachedLyrics(videoId);
     const offset = cached?.offset ?? 0;
     // `hasRejected` lets the host show a "Restore" button only when a match was

@@ -22,6 +22,7 @@ import {
   type Tab,
 } from "@/components/SongTabs";
 import { ControlsMenu } from "@/components/ControlsMenu";
+import { SettingsOverlay } from "@/components/SettingsOverlay";
 import { useMicPitch } from "@/lib/useMicPitch";
 import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
@@ -77,6 +78,7 @@ export default function RemotePage() {
   }, [joined, pw, code]);
 
   const [tab, setTab] = useState<Tab>("search");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Favorites (★), add-to-queue + "added" toast — shared with host. The singer
   // name (persisted) doubles as the identity stamped on pitch samples, so the
@@ -144,6 +146,14 @@ export default function RemotePage() {
             />
             Room {code}
           </span>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-2xl leading-none text-white/60 transition hover:text-white active:scale-95"
+          >
+            ⚙
+          </button>
           {signedIn ? (
             <button
               type="button"
@@ -245,14 +255,20 @@ export default function RemotePage() {
         )}
       </AnimatePresence>
 
-      {/* One floating menu: Sing (mic + name) + Target toggle + Reactions.
-          Shared with the host so both surfaces are identical. */}
+      {/* ⚙ Settings: AI key + feature toggles + the Target-line toggle. */}
+      <SettingsOverlay
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        showTarget={showTarget}
+        onToggleTarget={(v) => setShowTarget(v)}
+      />
+
+      {/* One floating menu: Sing (mic + name) + Reactions. Shared with the host
+          so both surfaces are identical. */}
       <ControlsMenu
         mic={mic}
         name={name}
         onNameChange={saveName}
-        showTarget={showTarget}
-        onToggleTarget={() => setShowTarget(!showTarget)}
         volume={volume}
         onVolumeChange={(v) => {
           setVolume(v);

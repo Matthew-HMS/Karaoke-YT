@@ -28,6 +28,12 @@ export type LyricsResult = {
   source: "lrclib" | "musixmatch";
 };
 
+// One piece of a furigana-annotated line. `t` is the literal text; `r`, when
+// present, is the hiragana reading shown ABOVE it (only kanji runs get an `r`).
+// Concatenating every segment's `t` reproduces the original line exactly. A line
+// is an array of these; a song is an array of lines.
+export type FuriganaSegment = { t: string; r?: string };
+
 export type PlayerStatus = "playing" | "paused" | "idle";
 
 export type PlayerState = {

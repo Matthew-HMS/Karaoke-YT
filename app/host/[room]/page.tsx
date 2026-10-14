@@ -24,6 +24,7 @@ import {
   type Tab,
 } from "@/components/SongTabs";
 import { ControlsMenu, VolumeIcon } from "@/components/ControlsMenu";
+import { SettingsOverlay } from "@/components/SettingsOverlay";
 import { HostTour, type TourStep } from "@/components/HostTour";
 import { PitchRibbon } from "@/components/PitchRibbon";
 import { ScoreCard } from "@/components/ScoreCard";
@@ -121,6 +122,7 @@ export default function HostPage() {
     });
 
   const [tab, setTab] = useState<Tab>("search");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const playerRef = useRef<PlayerHandle>(null);
 
   // The host can be a phone too, so it gets the same mic-pitch capture as a
@@ -249,10 +251,26 @@ export default function HostPage() {
     }
     prevSongId.current = songId;
   }, [songId]);
+  // Footer scrub bar. The player only reports its position once a second, so
+  // while someone is dragging we show THEIR position right away and hand
+  // control back to the reported time shortly after they let go.
+  const [scrubSec, setScrubSec] = useState<number | null>(null);
+  const scrubTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(scrubTimer.current), []);
+  const durationSec = player?.durationSec ?? 0;
+  const positionSec = scrubSec ?? player?.currentTimeSec ?? 0;
+  // Seeking goes through the room (not straight to our own player) so every
+  // host screen jumps together — same path as the remote's seek bar.
+  const seekTo = (sec: number) => {
+    setScrubSec(sec);
+    sendCommand({ cmd: "seek", valueSec: sec });
+    clearTimeout(scrubTimer.current);
+    scrubTimer.current = setTimeout(() => setScrubSec(null), 1200);
+  };
   const progress = useMemo(() => {
-    if (!player || !player.durationSec) return 0;
-    return Math.min(100, (player.currentTimeSec / player.durationSec) * 100);
-  }, [player]);
+    if (!durationSec) return 0;
+    return Math.min(100, (positionSec / durationSec) * 100);
+  }, [positionSec, durationSec]);
 
   // Detect a wiped session: room state lives in memory on the server, so a
   // restart/redeploy clears the queue + now-playing. If we were disconnected
@@ -424,7 +442,7 @@ export default function HostPage() {
       {
         selector: '[data-tour="tabs"]',
         title: "Find songs 🔍",
-        body: "Search for songs, or revisit your Favorites and Recents. Tap Queue to see what's coming up.",
+        body: "Search for songs, or revisit your Favorites and Recents. Tap Player to control the queue and see more.",
         onEnter: () => setTab("search"),
       },
       {
@@ -650,16 +668,40 @@ export default function HostPage() {
             }`}
           >
             <span className="text-xs tabular-nums text-white/50">
-              {formatTime(player?.currentTimeSec ?? 0)}
+              {formatTime(positionSec)}
             </span>
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-fuchsia-500 to-pink-500"
-                style={{ width: `${progress}%` }}
+            {/* Draggable progress: the slim bar doubles as a scrub bar, like
+                the seek slider on the now-playing card. A transparent range
+                input sits on top of the painted track so tap-to-jump, drag and
+                arrow keys all work without restyling native slider internals.
+                It's inert until a song with a known duration is loaded. */}
+            <div className="group relative h-4 flex-1">
+              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-fuchsia-500 to-pink-500"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              {durationSec > 0 && (
+                <div
+                  className="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  style={{ left: `${progress}%` }}
+                />
+              )}
+              <input
+                type="range"
+                aria-label="Seek"
+                min={0}
+                max={Math.max(durationSec, 1)}
+                step={1}
+                value={Math.min(positionSec, durationSec || 1)}
+                disabled={durationSec === 0}
+                onChange={(e) => seekTo(Number(e.target.value))}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-default"
               />
             </div>
             <span className="text-xs tabular-nums text-white/50">
-              {formatTime(player?.durationSec ?? 0)}
+              {formatTime(durationSec)}
             </span>
           </div>
 
@@ -752,25 +794,12 @@ export default function HostPage() {
               )}
               <button
                 type="button"
-                onClick={replayTour}
-                className="rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:text-white active:scale-95"
-                title="Replay the guided tour"
-                aria-label="Replay the guided tour"
+                onClick={() => setSettingsOpen(true)}
+                className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-2xl leading-none text-white/60 transition hover:text-white active:scale-95"
+                title="Settings"
+                aria-label="Settings"
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-4 w-4"
-                  aria-hidden="true"
-                >
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="16" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                </svg>
+                ⚙
               </button>
             </div>
           </header>
@@ -922,14 +951,21 @@ export default function HostPage() {
             )}
           </div>
 
+          {/* ⚙ Settings: AI key + feature toggles + the Target-line toggle. */}
+          <SettingsOverlay
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            showTarget={showTarget}
+            onToggleTarget={(v) => setShowTarget(v)}
+            onReplayTour={replayTour}
+          />
+
           {/* Same floating menu as the phone (the host can be a phone too):
-              Sing + Target toggle + Reactions. Anchored to this side panel. */}
+              Sing + Reactions. Anchored to this side panel. */}
           <ControlsMenu
             mic={mic}
             name={name}
             onNameChange={saveName}
-            showTarget={showTarget}
-            onToggleTarget={() => setShowTarget(!showTarget)}
             volume={volume}
             onVolumeChange={changeVolume}
             onSfx={sendSfx}
