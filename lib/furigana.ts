@@ -5,10 +5,14 @@
 // readings only over the kanji and leave kana/punctuation alone.
 
 import type { FuriganaSegment } from "@/lib/types";
-import { aiJSON } from "./aiCall";
+import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
 import type { AiAccess } from "./llm";
 import { getCachedFurigana, putCachedFurigana } from "./db";
 import { hasKana } from "./romanize";
+
+// Lines per model call for long songs — see lib/romanize.ts (CHUNK_LINES). Kept
+// the same so both readings split a long song consistently.
+const CHUNK_LINES = 60;
 
 const SYSTEM = `You annotate Japanese song lyrics with furigana.
 Input: a JSON array of lyric lines (strings), in order.
@@ -65,15 +69,32 @@ export async function furiganaLines(
     if (cached && cached.length === lines.length) return cached; // cache hit → free
   }
 
-  const raw = await aiJSON<unknown>({
-    access: opts.access,
-    clientId: opts.clientId,
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: JSON.stringify(lines) },
-    ],
-  });
-  const furigana = coerceFurigana(raw, lines);
+  const prompt = (batch: string[]) => [
+    { role: "system" as const, content: SYSTEM },
+    { role: "user" as const, content: JSON.stringify(batch) },
+  ];
+
+  let furigana: FuriganaSegment[][];
+  if (lines.length <= CHUNK_LINES) {
+    // Short song → one call (the common case).
+    const raw = await aiJSON<unknown>({
+      access: opts.access,
+      clientId: opts.clientId,
+      messages: prompt(lines),
+    });
+    furigana = coerceFurigana(raw, lines);
+  } else {
+    // Long song → split so no single call's (segment-heavy) output is truncated.
+    // Coerce each chunk against its own lines, then concatenate (one free use).
+    const batches = chunk(lines, CHUNK_LINES);
+    const raws = await aiJSONBatch<unknown>({
+      access: opts.access,
+      clientId: opts.clientId,
+      batches: batches.map(prompt),
+    });
+    furigana = raws.flatMap((raw, i) => coerceFurigana(raw, batches[i]));
+  }
+
   putCachedFurigana(videoId, furigana);
   return furigana;
 }

@@ -52,3 +52,44 @@ export async function aiJSON<T>(opts: {
   if (access.mode === "free") bumpAiUsage(clientId);
   return out;
 }
+
+// Split an array into fixed-size chunks (used to keep each model call's input
+// short enough that the output can't be truncated — see lib/romanize.ts).
+export function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Run several model calls as ONE quota unit, for a song long enough that it must
+// be chunked (a single call would exceed the model's output limit and get cut
+// off). The free quota is checked once up front and bumped once on overall
+// success, so a long song still costs the caller exactly ONE free use — even
+// though it's several model calls. Calls run sequentially (gentler on the free
+// rate limit); if any chunk fails the whole thing throws and no use is spent.
+export async function aiJSONBatch<T>(opts: {
+  access: AiAccess;
+  clientId: string;
+  batches: Message[][];
+}): Promise<T[]> {
+  const { access, clientId, batches } = opts;
+
+  if (access.mode === "free" && aiUsageCount(clientId) >= AI_FREE_LIMIT) {
+    throw new AiQuotaExceeded();
+  }
+
+  const out: T[] = [];
+  for (const messages of batches) {
+    out.push(
+      await llmJSON<T>({
+        keys: access.keys,
+        model: access.model,
+        fallback: access.fallback,
+        messages,
+      })
+    );
+  }
+
+  if (access.mode === "free") bumpAiUsage(clientId);
+  return out;
+}

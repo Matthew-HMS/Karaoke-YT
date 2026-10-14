@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseQueries } from "@/lib/aiSuggest";
+import { aiJSONBatch, chunk } from "@/lib/aiCall";
 import { hasKana, alignRomaji } from "@/lib/romanize";
 import { coerceFurigana } from "@/lib/furigana";
 import {
@@ -36,6 +37,41 @@ describe("parseQueries (mood search)", () => {
   it("caps the number of queries", () => {
     const many = Array.from({ length: 40 }, (_, i) => `song ${i}`);
     expect(parseQueries(many).length).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("chunk (long-song batching)", () => {
+  it("splits into fixed-size batches; the last may be short", () => {
+    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+    expect(chunk([1, 2, 3], 5)).toEqual([[1, 2, 3]]); // shorter than one chunk
+    expect(chunk([], 3)).toEqual([]);
+  });
+});
+
+describe("aiJSONBatch (chunked song = one quota unit)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("runs each batch and returns results in order", async () => {
+    let n = 0;
+    const fetchMock = vi.fn(async () => ({
+      status: 200,
+      ok: true,
+      json: async (): Promise<unknown> => ({
+        choices: [{ message: { content: JSON.stringify([`r${n++}`]) } }],
+      }),
+      text: async (): Promise<string> => "",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await aiJSONBatch<string[]>({
+      access: { keys: ["sk-x"], mode: "user", model: "m" },
+      clientId: "c",
+      batches: [
+        [{ role: "user", content: "a" }],
+        [{ role: "user", content: "b" }],
+      ],
+    });
+    expect(out).toEqual([["r0"], ["r1"]]);
+    expect(fetchMock.mock.calls.length).toBe(2);
   });
 });
 

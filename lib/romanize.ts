@@ -8,9 +8,16 @@
 // are cached in SQLite per videoId, exactly like the lyrics cache, so a song is
 // only ever romanised once.
 
-import { aiJSON } from "./aiCall";
+import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
 import type { AiAccess } from "./llm";
 import { getCachedRomaji, putCachedRomaji } from "./db";
+
+// Lines per model call. The free model reliably returns a correctly-sized array
+// up to ~120 lines but drifts/truncates beyond that (its output caps at ~4096
+// tokens), which would leave the tail of a long song blank. Longer songs are
+// split into chunks this size so every line gets translated. ~60 keeps each
+// call's output small and the line count exact, while most songs stay 1 call.
+const CHUNK_LINES = 60;
 
 // Hiragana (ぁ-ゟ) or katakana (゠-ヿ, plus half-width ｦ-ﾟ) → Japanese.
 const KANA_RE = /[ぁ-ゖ゠-ヿｦ-ﾝ]/;
@@ -57,15 +64,32 @@ export async function romanizeLines(
     if (cached && cached.length === lines.length) return cached; // cache hit → free
   }
 
-  const raw = await aiJSON<unknown>({
-    access: opts.access,
-    clientId: opts.clientId,
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: JSON.stringify(lines) },
-    ],
-  });
-  const romaji = alignRomaji(raw, lines.length);
+  const prompt = (batch: string[]) => [
+    { role: "system" as const, content: SYSTEM },
+    { role: "user" as const, content: JSON.stringify(batch) },
+  ];
+
+  let romaji: string[];
+  if (lines.length <= CHUNK_LINES) {
+    // Short song → one call (the common case).
+    const raw = await aiJSON<unknown>({
+      access: opts.access,
+      clientId: opts.clientId,
+      messages: prompt(lines),
+    });
+    romaji = alignRomaji(raw, lines.length);
+  } else {
+    // Long song → split so no single call's output is truncated. Align each
+    // chunk to its own length, then concatenate (counts a single free use).
+    const batches = chunk(lines, CHUNK_LINES);
+    const raws = await aiJSONBatch<unknown>({
+      access: opts.access,
+      clientId: opts.clientId,
+      batches: batches.map(prompt),
+    });
+    romaji = raws.flatMap((raw, i) => alignRomaji(raw, batches[i].length));
+  }
+
   putCachedRomaji(videoId, romaji);
   return romaji;
 }

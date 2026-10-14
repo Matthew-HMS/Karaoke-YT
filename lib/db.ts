@@ -255,10 +255,29 @@ export function clearRejectedLyrics(videoId: string): void {
   clearRejectedLyricsStmt.run(videoId);
 }
 
+// Bump when the reading pipeline changes in a way that makes old cached results
+// wrong or worse (e.g. the long-song chunking fix) — rows written by an older
+// version are then treated as a MISS and regenerated instead of serving a stale,
+// truncated "half the song" result. Existing rows (added before the `ver` column)
+// default to 0, so they're invalidated the first time a newer version reads them.
+const READING_CACHE_VERSION = 1;
+
+// Add the `ver` column to a reading-cache table that predates it. The CREATE
+// above doesn't include it (so an existing table keeps its rows); this ALTER
+// adds it with DEFAULT 0 and is a no-op (duplicate-column error, ignored) once
+// present. Must run before the prepared statements below reference `ver`.
+function addVerColumn(table: string): void {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ver INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // column already exists
+  }
+}
+
 // ---- Romaji cache (Japanese lyrics romanization) ----
 // One row per video: the Hepburn romaji for that song's lyric lines, aligned
 // 1:1 with the lyrics we cached. Generated once via the LLM (see lib/romanize.ts)
-// and reused forever, so a song is only ever romanised on the first request.
+// and reused (while `ver` matches), so a song is only romanised on first request.
 db.exec(`
   CREATE TABLE IF NOT EXISTS romaji (
     videoId   TEXT PRIMARY KEY,
@@ -266,19 +285,20 @@ db.exec(`
     fetchedAt INTEGER NOT NULL
   );
 `);
+addVerColumn("romaji");
 
-const getRomajiStmt = db.prepare(`SELECT data FROM romaji WHERE videoId = ?`);
+const getRomajiStmt = db.prepare(`SELECT data, ver FROM romaji WHERE videoId = ?`);
 
 export function getCachedRomaji(videoId: string): string[] | null {
-  const row = getRomajiStmt.get(videoId) as { data: string } | undefined;
-  if (!row) return null;
+  const row = getRomajiStmt.get(videoId) as { data: string; ver: number } | undefined;
+  if (!row || row.ver !== READING_CACHE_VERSION) return null; // miss / stale version
   return JSON.parse(row.data) as string[];
 }
 
 const putRomajiStmt = db.prepare(
-  `INSERT INTO romaji (videoId, data, fetchedAt)
-   VALUES (@videoId, @data, @fetchedAt)
-   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt`
+  `INSERT INTO romaji (videoId, data, fetchedAt, ver)
+   VALUES (@videoId, @data, @fetchedAt, @ver)
+   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt, ver = @ver`
 );
 
 export function putCachedRomaji(videoId: string, lines: string[]): void {
@@ -286,6 +306,7 @@ export function putCachedRomaji(videoId: string, lines: string[]): void {
     videoId,
     data: JSON.stringify(lines),
     fetchedAt: Date.now(),
+    ver: READING_CACHE_VERSION,
   });
 }
 
@@ -299,19 +320,20 @@ db.exec(`
     fetchedAt INTEGER NOT NULL
   );
 `);
+addVerColumn("furigana");
 
-const getFuriganaStmt = db.prepare(`SELECT data FROM furigana WHERE videoId = ?`);
+const getFuriganaStmt = db.prepare(`SELECT data, ver FROM furigana WHERE videoId = ?`);
 
 export function getCachedFurigana(videoId: string): FuriganaSegment[][] | null {
-  const row = getFuriganaStmt.get(videoId) as { data: string } | undefined;
-  if (!row) return null;
+  const row = getFuriganaStmt.get(videoId) as { data: string; ver: number } | undefined;
+  if (!row || row.ver !== READING_CACHE_VERSION) return null; // miss / stale version
   return JSON.parse(row.data) as FuriganaSegment[][];
 }
 
 const putFuriganaStmt = db.prepare(
-  `INSERT INTO furigana (videoId, data, fetchedAt)
-   VALUES (@videoId, @data, @fetchedAt)
-   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt`
+  `INSERT INTO furigana (videoId, data, fetchedAt, ver)
+   VALUES (@videoId, @data, @fetchedAt, @ver)
+   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt, ver = @ver`
 );
 
 export function putCachedFurigana(
@@ -322,6 +344,7 @@ export function putCachedFurigana(
     videoId,
     data: JSON.stringify(lines),
     fetchedAt: Date.now(),
+    ver: READING_CACHE_VERSION,
   });
 }
 

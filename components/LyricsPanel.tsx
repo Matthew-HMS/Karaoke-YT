@@ -336,9 +336,10 @@ export function LyricsPanel({
           )}
         </div>
       </div>
-      {/* Reading-aid hint (timeout / rate limit / free-quota used up), with a
-          Retry so a failed reading can be re-attempted without toggling off/on. */}
-      {readingNote && (
+      {/* On error: the hint + Retry. On a shown reading: a subtle Re-translate so
+          a wrong/stale one can be re-rolled (e.g. after switching to a better
+          model) — both force a fresh, cache-bypassing translation. */}
+      {readingNote ? (
         <p className="mb-1 rounded-lg bg-white/5 px-2 py-1 text-center text-[11px] text-amber-300/80">
           {readingNote}{" "}
           <button
@@ -349,7 +350,17 @@ export function LyricsPanel({
             Retry
           </button>
         </p>
-      )}
+      ) : romaji || furigana ? (
+        <p className="mb-1 text-center text-[11px] text-white/30">
+          <button
+            type="button"
+            onClick={() => setReadingRetry((k) => k + 1)}
+            className="underline underline-offset-2 transition hover:text-white/60"
+          >
+            ↻ Re-translate
+          </button>
+        </p>
+      ) : null}
       <div
         ref={scrollRef}
         className="no-scrollbar relative min-h-0 flex-1 overflow-y-auto text-center"
