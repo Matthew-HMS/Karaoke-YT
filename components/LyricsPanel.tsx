@@ -75,6 +75,12 @@ export function LyricsPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track what the last reading fetch used, to decide when to FORCE a re-translate
+  // (bypass the per-video cache): when the model changed (a better model should
+  // re-translate the song) or the user hit Retry. A plain song change keeps using
+  // the cache — re-running the same model is deterministic, so it'd be identical.
+  const lastReadingModel = useRef(settings.orcaModel);
+  const lastReadingRetry = useRef(readingRetry);
 
   // (Re)fetch whenever the song changes — or after a report (reloadKey).
   useEffect(() => {
@@ -124,11 +130,18 @@ export function LyricsPanel({
     const texts = (data.lines ?? []).map((l) => l.text);
     if (!texts.some((t) => KANA_RE.test(t))) return; // not Japanese → skip
     let active = true;
+    // Force a fresh translation (bypassing the cache) when the model changed or
+    // the user hit Retry; a plain song change just uses the cache.
+    const refresh =
+      lastReadingModel.current !== settings.orcaModel ||
+      lastReadingRetry.current !== readingRetry;
+    lastReadingModel.current = settings.orcaModel;
+    lastReadingRetry.current = readingRetry;
     const url = mode === "furigana" ? "/api/furigana" : "/api/romanize";
     fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...settings.authHeaders() },
-      body: JSON.stringify({ videoId, lines: texts }),
+      body: JSON.stringify({ videoId, lines: texts, refresh }),
     })
       .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
       .then(({ status, body }) => {

@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "AI not configured", furigana: null }, { status: 503 });
   }
 
-  let body: { videoId?: unknown; lines?: unknown };
+  let body: { videoId?: unknown; lines?: unknown; refresh?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -35,13 +35,14 @@ export async function POST(req: NextRequest) {
   if (!videoId || !lines) {
     return NextResponse.json({ error: "videoId and lines required" }, { status: 400 });
   }
+  const refresh = body.refresh === true; // re-annotate, bypassing the cache
 
   const session = await auth();
   const clientId =
     session?.user?.id || req.headers.get("x-ai-client")?.trim() || "anon";
 
   try {
-    const furigana = await furiganaLines(videoId, lines, { access, clientId });
+    const furigana = await furiganaLines(videoId, lines, { access, clientId, refresh });
     return NextResponse.json({ furigana });
   } catch (err) {
     return aiErrorResponse(err, { furigana: null });

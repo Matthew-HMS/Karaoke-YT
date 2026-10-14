@@ -46,12 +46,16 @@ export function alignRomaji(raw: unknown, count: number): string[] {
 export async function romanizeLines(
   videoId: string,
   lines: string[],
-  opts: { access: AiAccess; clientId: string }
+  opts: { access: AiAccess; clientId: string; refresh?: boolean }
 ): Promise<string[] | null> {
   if (!lines.some(hasKana)) return null; // not Japanese → nothing to do
 
-  const cached = getCachedRomaji(videoId);
-  if (cached && cached.length === lines.length) return cached; // cache hit → free
+  // `refresh` forces a fresh translation (e.g. after switching to a better
+  // model), bypassing the cache read; the new result still overwrites the cache.
+  if (!opts.refresh) {
+    const cached = getCachedRomaji(videoId);
+    if (cached && cached.length === lines.length) return cached; // cache hit → free
+  }
 
   const raw = await aiJSON<unknown>({
     access: opts.access,

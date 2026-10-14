@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "AI not configured", romaji: null }, { status: 503 });
   }
 
-  let body: { videoId?: unknown; lines?: unknown };
+  let body: { videoId?: unknown; lines?: unknown; refresh?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -35,13 +35,14 @@ export async function POST(req: NextRequest) {
   if (!videoId || !lines) {
     return NextResponse.json({ error: "videoId and lines required" }, { status: 400 });
   }
+  const refresh = body.refresh === true; // re-translate, bypassing the cache
 
   const session = await auth();
   const clientId =
     session?.user?.id || req.headers.get("x-ai-client")?.trim() || "anon";
 
   try {
-    const romaji = await romanizeLines(videoId, lines, { access, clientId });
+    const romaji = await romanizeLines(videoId, lines, { access, clientId, refresh });
     return NextResponse.json({ romaji });
   } catch (err) {
     return aiErrorResponse(err, { romaji: null });
