@@ -25,6 +25,12 @@ import {
 const BASE = (process.env.REFERENCE_BASE_URL || "").replace(/\/+$/, "");
 const TOKEN = process.env.REFERENCE_INGEST_TOKEN || "";
 const POLL_MS = Number(process.env.POLL_MS || 15_000);
+// Pacing, to avoid YouTube flagging a burst of downloads from one IP. Process at
+// most MAX_PER_TICK videos per poll, with a GEN_GAP_MS (+ up to GEN_GAP_JITTER_MS
+// random) pause between each. Tune via env if your IP is stricter/looser.
+const MAX_PER_TICK = Number(process.env.GEN_MAX_PER_TICK || 3);
+const GEN_GAP_MS = Number(process.env.GEN_GAP_MS || 8_000);
+const GEN_GAP_JITTER_MS = Number(process.env.GEN_GAP_JITTER_MS || 7_000);
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const SAMPLE_RATE = 16_000; // must match lib/reference.ts
@@ -132,11 +138,20 @@ async function tick(): Promise<void> {
   const res = await fetch(`${BASE}/api/reference/pending`, { headers: auth });
   if (!res.ok) throw new Error(`pending HTTP ${res.status}`);
   const { videoIds } = (await res.json()) as { videoIds: string[] };
-  for (const id of videoIds) {
+  // Only take a few per cycle and SPACE them out. Downloading the whole backlog
+  // back-to-back from one IP is what makes YouTube flag it (→ "not available" /
+  // "sign in to confirm you're not a bot"). A small batch + a randomized gap
+  // between downloads looks far less bot-like, so more contours actually land.
+  const batch = videoIds.slice(0, MAX_PER_TICK);
+  for (let i = 0; i < batch.length; i++) {
     try {
-      await generateAndSend(id);
+      await generateAndSend(batch[i]);
     } catch (e) {
-      console.warn(`✗ ${id} — ${e instanceof Error ? e.message : String(e)}`);
+      console.warn(`✗ ${batch[i]} — ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Jittered gap before the next download (not after the last one).
+    if (i < batch.length - 1) {
+      await sleep(GEN_GAP_MS + Math.floor(Math.random() * GEN_GAP_JITTER_MS));
     }
   }
 }

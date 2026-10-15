@@ -235,7 +235,9 @@ export default function HostPage() {
 
   // Fetch the song's reference pitch contour (the karaoke target line). Polls
   // while it's still generating on the server; null until ready for this song.
-  const reference = useReferenceContour(nowPlaying?.videoId);
+  const { contour: reference, status: referenceStatus } = useReferenceContour(
+    nowPlaying?.videoId
+  );
 
   // Auto-stop the host's mic when the song ends — one take per song, matching
   // the remote. Read `mic` via a ref so this only re-runs on a song change.
@@ -607,6 +609,15 @@ export default function HostPage() {
               songTimeSec={player?.currentTimeSec ?? 0}
               playing={player?.status === "playing"}
             />
+          )}
+
+          {/* Target line is on but its pitch reference couldn't be generated
+              (e.g. the audio download is bot-walled) — tell the host instead of
+              silently showing no line. */}
+          {nowPlaying && showTarget && referenceStatus === "unavailable" && (
+            <div className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-center text-xs text-white/60 backdrop-blur-sm">
+              Target pitch line unavailable for this song right now.
+            </div>
           )}
 
           {/* End-of-song score card (over the stage, above the ribbon). */}
