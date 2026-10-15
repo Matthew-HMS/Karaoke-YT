@@ -261,11 +261,20 @@ describe("resolveAccess (key + quota policy)", () => {
     });
     // The owner's paid key is never offered to a user's request.
     expect(resolveAccess("sk-mine")?.fallback?.keys).toEqual(["sk-mine"]);
-    // A model they picked is taken at face value — no second guess, no fallback.
-    expect(resolveAccess("sk-mine", "qwen/qwen3.7-flash")).toEqual({
+    // A model they picked is honored as the PRIMARY attempt — but it still gets
+    // the paid fallback, because any free id dead-ends once its daily cap is
+    // spent (429 in milliseconds, credits never consulted).
+    expect(resolveAccess("sk-mine", "orcarouter/free")).toEqual({
       keys: ["sk-mine"],
       mode: "user",
-      model: "qwen/qwen3.7-flash",
+      model: "orcarouter/free",
+      fallback: { keys: ["sk-mine"], model: "deepseek/deepseek-v4-flash", own: true },
+    });
+    // Unless the pick already IS the paid model — nothing left to fall back to.
+    expect(resolveAccess("sk-mine", "deepseek/deepseek-v4-flash")).toEqual({
+      keys: ["sk-mine"],
+      mode: "user",
+      model: "deepseek/deepseek-v4-flash",
     });
   });
 });

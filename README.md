@@ -133,21 +133,35 @@ instantly **seek to any part** of a song.
   - 🔑 **Keys & free quota** — set `ORCAROUTER_API_KEY` on the **server** (never
     exposed to the browser) and AI works for everyone, up to `AI_FREE_LIMIT`
     (default **5**) uses per Google account / per guest device on the shared key.
-    Each free key is ~50 requests/day, so `ORCAROUTER_API_KEY` accepts a
-    **comma-separated pool** of keys and fails over to the next on a 429.
+    The free tier allows ~50 requests/day under $20 lifetime spend (see Paid
+    fallback below). `ORCAROUTER_API_KEY` accepts a **comma-separated pool** of keys
+    and fails over to the next on a 429, but note the allowance is **per workspace,
+    not per key** — extra keys from the *same* account share one daily bucket and
+    multiply nothing. Only keys from separate accounts add capacity. (The free
+    "Hacker" plan caps an account at 10 keys; credit top-ups don't raise that.)
     After that a user pastes **their own** free key in ⚙ Settings (kept on their
     device; a ⧉ referral button links out to get one). The deployer can set a
     private `AI_BYPASS_SECRET` word to use the server key with no limit.
     Quota exhaustion surfaces as a friendly "try again / add your key" hint;
     without any key, AI affordances are hidden and the rest works unchanged.
-  - 💳 **Paid fallback** — the free model's capacity is capped **globally, not per
-    key**: when it's saturated *every* key gets a 429 whose cooldown runs to
-    **hours**, credits or not. So a free-model 429 retries once on a fixed cheap
-    paid model (`ORCAROUTER_PAID_MODEL`, fractions of a cent per song) instead of
-    dead-ending. Shared-key use (guests *and* `AI_BYPASS_SECRET`) falls back to
+  - 💳 **Paid fallback** — free-tier limits attach to the **free model id**, not to
+    your billing status, so a credited key calling `orcarouter/free` gets the same
+    429 as a brand-new one. The live tier table is
+    `GET https://api.orcarouter.ai/api/free-package/public` → `free_tier.tiers`:
+    **10 rpm / 50 rpd** under $20 lifetime spend, **20 rpm / 800 rpd** at/above it
+    (so the daily cap is raised by *topping up*, not by holding credits; individual
+    free ids can carry their own looser row — `tencent/hy4-preview-free` is
+    250→4000 rpd — and those buckets are counted separately). Exceed the
+    daily cap and the 429's `retry_after_seconds` is the wait for the next daily
+    reset — **hours**, which no backoff can outlast. So a free-model 429 retries
+    once on a fixed cheap paid model (`ORCAROUTER_PAID_MODEL`, fractions of a cent
+    per song), which free-tier limits don't touch, instead of dead-ending.
+    Shared-key use (guests *and* `AI_BYPASS_SECRET`) falls back to
     `ORCAROUTER_PAID_KEY`; a user's **own** key falls back on *their* key, so
-    pasting a credited key is enough to ride out a cooldown — no model to pick.
-    Set a Model in ⚙ Settings and that choice is honored as-is, no fallback.
+    pasting a credited key is enough to ride it out — no model to pick. A Model you
+    *do* pick is honored as the primary attempt but keeps that fallback behind it,
+    since picking a **free** id would otherwise dead-end the moment its daily cap
+    is spent (429 in milliseconds, credits never consulted).
 - ⚙ **Settings overlay** — a per-device settings panel (the ⚙ button) holding the
   AI key + toggles and the room's **Target-line** toggle.
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
@@ -216,9 +230,10 @@ Environment (`.env.local`):
   `ORCAROUTER_API_BASE_URL` (default `https://api.orcarouter.ai/v1`),
   `ORCAROUTER_MODEL` (default `orcarouter/free`).
 - `ORCAROUTER_PAID_KEY` — *optional* **credited** key used only when the free
-  model is in one of its (global, multi-hour) cooldowns, on the fixed cheap
-  `ORCAROUTER_PAID_MODEL` (default `deepseek/deepseek-v4-flash`). Without it,
-  shared-key AI simply degrades when the free pool is saturated. Server-only.
+  model's daily cap is spent, on the fixed cheap `ORCAROUTER_PAID_MODEL` (default
+  `deepseek/deepseek-v4-flash`, measured **~$0.0005/song** ≈ 1,900 songs per $1).
+  Needs that model enabled in the key's console scope or it 403s. Without it,
+  shared-key AI simply degrades once the free daily cap is gone. Server-only.
 - Trending (signed-out "Top hits") uses YouTube's **Most Popular** music chart
   via the Data API when `YOUTUBE_API_KEY` is set — quota-cheap (~1 unit/region,
   refreshed hourly). `TRENDING_REGION` (*optional*, default `TW,US,JP`) is a

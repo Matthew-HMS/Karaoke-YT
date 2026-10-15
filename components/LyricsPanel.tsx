@@ -122,7 +122,23 @@ export function LyricsPanel({
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, title, durationSec, reloadKey, settings.smartCleanup, settings.aiAvailable, settings.orcaKey]);
+    // `durationSec` is rounded in the dep for the same reason it's rounded in the
+    // query: the player re-reports a float every second, and re-running this on
+    // sub-second jitter would hand the AI effects a fresh `data` object each time.
+  }, [videoId, title, Math.round(durationSec), reloadKey, settings.smartCleanup, settings.aiAvailable, settings.orcaKey]);
+
+  // The lyric texts, plus a VALUE key for them. The AI effects below must depend
+  // on this key and not on `data`: the player reports its duration every second
+  // (YouTubePlayer onReport), so `durationSec` changes at least once per song
+  // (0 → real), the lyrics effect re-runs, and `setData` hands back a brand-new
+  // object with identical content. Depending on the object re-fired both AI
+  // effects on every one of those — duplicate, concurrent, *billed* model calls
+  // whose results were then thrown away by the `active = false` cleanup.
+  const texts = useMemo(
+    () => (data?.found ? (data.lines ?? []).map((l) => l.text) : []),
+    [data]
+  );
+  const textsKey = texts.join("\n");
 
   // Japanese reading aid: when a mode is picked and the lyrics are Japanese,
   // fetch romaji (Latin, under each line) or furigana (hiragana, over kanji).
@@ -132,8 +148,7 @@ export function LyricsPanel({
     setFurigana(null);
     setReadingNote(null);
     const mode = settings.jpReading;
-    if (mode === "off" || !settings.aiAvailable || !data?.found) return;
-    const texts = (data.lines ?? []).map((l) => l.text);
+    if (mode === "off" || !settings.aiAvailable || !texts.length) return;
     if (!texts.some((t) => KANA_RE.test(t))) return; // not Japanese → skip
     let active = true;
     // Force a fresh translation (bypassing the cache) when the model changed or
@@ -200,7 +215,7 @@ export function LyricsPanel({
     // changing the model) immediately retries the reading for the current song;
     // readingRetry lets the user force a retry with no change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, data, settings.jpReading, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
+  }, [videoId, textsKey, settings.jpReading, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
 
   // Lyrics translation to the chosen target language — an independent aid shown
   // under each line (meaning, not pronunciation). Same shape as the reading
@@ -209,8 +224,7 @@ export function LyricsPanel({
   useEffect(() => {
     setTranslation(null);
     const lang = settings.translateTo;
-    if (lang === "off" || !settings.aiAvailable || !data?.found) return;
-    const texts = (data.lines ?? []).map((l) => l.text);
+    if (lang === "off" || !settings.aiAvailable || !texts.length) return;
     if (texts.every((t) => !t.trim())) return; // nothing to translate
     let active = true;
     const refresh =
@@ -249,7 +263,7 @@ export function LyricsPanel({
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, data, settings.translateTo, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
+  }, [videoId, textsKey, settings.translateTo, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
 
   // Nudge the sync offset and persist it (debounced) so it sticks next time.
   const nudge = (delta: number) => {

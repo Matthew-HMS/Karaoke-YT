@@ -171,22 +171,23 @@ export function resolveAccess(
       : null;
   }
   // A real user-supplied key → theirs to spend, no quota, and they may pick the
-  // model. Picking one is taken at face value: that model, no second guess.
-  // Picking NONE used to mean `orcarouter/free` with no safety net, which is a
-  // dead end whenever the free pool is in one of its multi-hour cooldowns — the
-  // key's credits never got a chance to help, which reads as "my paid key is
-  // broken". So an unspecified model keeps the free default but falls back to the
-  // cheap paid model ON THEIR OWN KEY: credited keys just work, and a free key
-  // surfaces the existing "needs credits" hint instead of a bare rate limit.
+  // model. Whatever they pick (or the free default if they pick nothing) is the
+  // PRIMARY attempt, honored as asked. Behind it sits the cheap paid model on
+  // THEIR OWN key, because any free id is a dead end once its daily cap is spent:
+  // the request 429s in milliseconds, the key's credits never get a chance to
+  // help, and it reads as "my paid key is broken". The fallback is skipped only
+  // when the pick IS the paid model (nothing left to fall back to). A free key
+  // then surfaces the existing "needs credits" hint instead of a bare rate limit.
   if (own) {
-    const picked = reqModel?.trim();
-    if (picked) return { keys: [own], mode: "user", model: picked };
-    return {
-      keys: [own],
-      mode: "user",
-      model: DEFAULT_MODEL,
-      fallback: { keys: [own], model: PAID_MODEL, own: true },
-    };
+    const model = reqModel?.trim() || DEFAULT_MODEL;
+    return model === PAID_MODEL
+      ? { keys: [own], mode: "user", model }
+      : {
+          keys: [own],
+          mode: "user",
+          model,
+          fallback: { keys: [own], model: PAID_MODEL, own: true },
+        };
   }
   // Otherwise the shared server key pool under the free quota — always free model,
   // with the paid fallback behind it so a busy/exhausted pool still serves.
