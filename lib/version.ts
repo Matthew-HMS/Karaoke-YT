@@ -21,6 +21,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     items: [
       "✨ Ask AI in the Search tab — describe a vibe (\"upbeat mandarin party songs\") to get real, queueable picks, with Load more.",
       "🇯🇵 Japanese reading aid for lyrics — furigana (hiragana above kanji) or romaji, in the new ⚙ Settings.",
+      "🌏 Translate lyrics — pick a language in ⚙ Settings and see a translation under each line (skipped if the song's already in that language).",
       "🧹 Smarter lyrics matching for messy video titles.",
       "⚙ New Settings panel — set your AI key and toggle features (the Target line toggle moved here).",
       "🔑 5 free AI uses per person on the shared key; after that, paste your own free OrcaRouter key (one tap to get one).",

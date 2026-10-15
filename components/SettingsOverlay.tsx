@@ -8,7 +8,8 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useState } from "react";
-import { useSettings } from "@/lib/useSettings";
+import { useSettings, type TranslateTo } from "@/lib/useSettings";
+import { TRANSLATE_LANGS } from "@/lib/translateLangs";
 
 // A labelled on/off switch matching the app's toggle style.
 function Toggle({
@@ -366,6 +367,29 @@ export function SettingsOverlay({
                     </div>
                     <span className="mt-1 block text-xs text-white/40">
                       Furigana shows hiragana above kanji; romaji shows it in Latin below.
+                    </span>
+                  </div>
+                  <div className="rounded-xl bg-white/5 px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium">Translate lyrics</span>
+                      <select
+                        value={s.translateTo}
+                        onChange={(e) =>
+                          s.setTranslateTo(e.target.value as TranslateTo)
+                        }
+                        className="rounded-lg border border-white/10 bg-neutral-900 px-2 py-1 text-xs text-white outline-none focus:border-fuchsia-400"
+                      >
+                        <option value="off">Off</option>
+                        {Object.entries(TRANSLATE_LANGS).map(([code, { label }]) => (
+                          <option key={code} value={code}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <span className="mt-1 block text-xs text-white/40">
+                      Shows a translation under each line — skipped when the song is
+                      already in that language.
                     </span>
                   </div>
                   <Toggle

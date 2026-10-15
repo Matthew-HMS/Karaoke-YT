@@ -56,6 +56,7 @@ export function LyricsPanel({
   // Japanese / not requested). Only one is populated, per the settings mode.
   const [romaji, setRomaji] = useState<string[] | null>(null);
   const [furigana, setFurigana] = useState<FuriganaSegment[][] | null>(null);
+  const [translation, setTranslation] = useState<string[] | null>(null);
   // A small hint shown when the reading aid can't load (rate limit / quota).
   const [readingNote, setReadingNote] = useState<string | null>(null);
   // Bumped by the "Retry" button to re-run the reading fetch for the SAME song /
@@ -81,6 +82,9 @@ export function LyricsPanel({
   // the cache — re-running the same model is deterministic, so it'd be identical.
   const lastReadingModel = useRef(settings.orcaModel);
   const lastReadingRetry = useRef(readingRetry);
+  // Same refresh tracking for the (independent) translation fetch.
+  const lastTransModel = useRef(settings.orcaModel);
+  const lastTransRetry = useRef(readingRetry);
 
   // (Re)fetch whenever the song changes — or after a report (reloadKey).
   useEffect(() => {
@@ -91,6 +95,7 @@ export function LyricsPanel({
     setConfirmReport(false);
     setRomaji(null);
     setFurigana(null);
+    setTranslation(null);
     const params = new URLSearchParams({
       videoId,
       title,
@@ -186,6 +191,46 @@ export function LyricsPanel({
     // readingRetry lets the user force a retry with no change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId, data, settings.jpReading, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
+
+  // Lyrics translation to the chosen target language — an independent aid shown
+  // under each line (meaning, not pronunciation). Same shape as the reading
+  // fetch: cached server-side, bypassed on model change / Retry, null when the
+  // song is already in that language.
+  useEffect(() => {
+    setTranslation(null);
+    const lang = settings.translateTo;
+    if (lang === "off" || !settings.aiAvailable || !data?.found) return;
+    const texts = (data.lines ?? []).map((l) => l.text);
+    if (texts.every((t) => !t.trim())) return; // nothing to translate
+    let active = true;
+    const refresh =
+      lastTransModel.current !== settings.orcaModel ||
+      lastTransRetry.current !== readingRetry;
+    lastTransModel.current = settings.orcaModel;
+    lastTransRetry.current = readingRetry;
+    fetch("/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...settings.authHeaders() },
+      body: JSON.stringify({ videoId, lines: texts, lang, refresh }),
+    })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+      .then(({ status, body }) => {
+        if (!active) return;
+        const d = body as { translation?: unknown; code?: unknown };
+        if (Array.isArray(d.translation)) {
+          setTranslation(d.translation as string[]);
+        } else if (status >= 400 && d.code === "slow_model") {
+          setReadingNote("That model was too slow (timed out). Pick a faster one in ⚙ Settings.");
+        }
+        // translation === null (already in that language) → just show nothing.
+        settings.refreshStatus();
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId, data, settings.translateTo, settings.aiAvailable, settings.orcaKey, settings.orcaModel, readingRetry]);
 
   // Nudge the sync offset and persist it (debounced) so it sticks next time.
   const nudge = (delta: number) => {
@@ -350,7 +395,7 @@ export function LyricsPanel({
             Retry
           </button>
         </p>
-      ) : romaji || furigana ? (
+      ) : romaji || furigana || translation ? (
         <p className="mb-1 text-center text-[11px] text-white/30">
           <button
             type="button"
@@ -390,6 +435,7 @@ export function LyricsPanel({
             const isPast = synced && activeIndex >= 0 && i < activeIndex;
             const rj = romaji?.[i];
             const furi = furigana?.[i];
+            const tr = translation?.[i];
             return (
               <div key={i} ref={isActive ? activeRef : undefined}>
               <p
@@ -432,6 +478,20 @@ export function LyricsPanel({
                   }`}
                 >
                   {rj}
+                </p>
+              )}
+              {/* Translation under the line (meaning), when a target language is set. */}
+              {tr && (
+                <p
+                  className={`pb-1.5 leading-snug italic transition-colors duration-200 ${
+                    isActive
+                      ? "text-base font-medium text-sky-200"
+                      : isPast
+                      ? "text-xs text-white/20"
+                      : "text-xs text-sky-100/40"
+                  }`}
+                >
+                  {tr}
                 </p>
               )}
               </div>

@@ -122,6 +122,10 @@ instantly **seek to any part** of a song.
     (hiragana **above each kanji**, via `<ruby>`) or Hepburn **romaji** under each
     line (kana-detected; Chinese is left alone). Cached per-video in SQLite; the
     furigana output is reconstruction-checked so it can never alter the lyrics.
+  - 🌏 **Lyrics translation** — a **⚙ Settings** language dropdown (English, 中文,
+    日本語, 한국어, Español, …) translates the lyrics line-by-line under each line
+    (meaning, not pronunciation). Skipped when the song is already in that language;
+    cached per `(video, language)` and chunked for long songs like romaji.
   - 🧹 **Smart lyrics cleanup** — when the normal lyrics lookup misses on a messy
     title, the model extracts a clean `{artist, track}` and retries once, raising
     the hit-rate. Fires only on a miss; the result is cached like any other.

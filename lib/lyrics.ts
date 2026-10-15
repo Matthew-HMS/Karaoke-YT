@@ -455,12 +455,15 @@ export async function getLyrics(
   // available. A quota/rate-limit failure inside llmParseTitle just returns null
   // (cleanup silently skipped) so the lyrics request never fails over it.
   if (!result && opts.ai && opts.access) {
+    // Normal lookup missed — this is the only path that spends an LLM call.
+    console.log(`[lyrics] AI title cleanup firing for "${rawTitle}" (regex parse missed)`);
     const clean = await llmParseTitle(rawTitle, opts.access, opts.clientId ?? "anon");
     // Only worth retrying if the LLM's guess differs from our regex parse.
     if (
       clean &&
       (clean.track !== track || (clean.artist ?? "") !== (artist ?? ""))
     ) {
+      console.log(`[lyrics] AI cleaned "${rawTitle}" → ${JSON.stringify(clean)}`);
       try {
         result = await fetchLrclib(clean.artist, clean.track, durationSec, rejected);
       } catch {

@@ -11,6 +11,7 @@
 // whether one exists via /api/ai/status.
 
 import { useSyncExternalStore } from "react";
+import { isTranslateLang, type TranslateLang } from "./translateLangs";
 
 const KEYS = {
   orcaKey: "orca-key",
@@ -18,12 +19,21 @@ const KEYS = {
   jpReading: "ai-jp-reading",
   romaji: "ai-romaji", // legacy boolean, migrated into jpReading
   smartCleanup: "ai-smart-cleanup",
+  translateTo: "ai-translate-to", // target language for lyric translation, or off
   clientId: "ai-client-id", // per-device id for the free-use quota (guests)
 } as const;
 
 // Japanese reading aid shown on the lyrics: none, romaji under each line, or
 // furigana (hiragana) above each kanji.
 export type JpReading = "off" | "romaji" | "furigana";
+
+// Target language the lyrics are translated to (shown under each line), or "off".
+export type TranslateTo = TranslateLang | "off";
+
+function readTranslateTo(): TranslateTo {
+  const v = localStorage.getItem(KEYS.translateTo);
+  return isTranslateLang(v) ? v : "off";
+}
 
 // How this device is currently using AI (from /api/ai/status).
 export type AiMode = "user" | "unlimited" | "free" | null;
@@ -32,6 +42,7 @@ type State = {
   orcaKey: string;
   orcaModel: string; // model override (empty = free default); used with own key
   jpReading: JpReading; // Japanese reading aid on lyrics (default off)
+  translateTo: TranslateTo; // translate lyrics to this language (default off)
   smartCleanup: boolean; // LLM title cleanup for lyrics misses (default on)
   serverEnabled: boolean; // server has a default key (from /api/ai/status)
   freeLimit: number; // free AI uses on the shared key (from /api/ai/status)
@@ -67,6 +78,7 @@ function read(): State {
       orcaKey: "",
       orcaModel: "",
       jpReading: "off",
+      translateTo: "off",
       smartCleanup: true,
       serverEnabled: false,
       freeLimit: 5,
@@ -78,6 +90,7 @@ function read(): State {
     orcaKey: localStorage.getItem(KEYS.orcaKey) ?? "",
     orcaModel: localStorage.getItem(KEYS.orcaModel) ?? "",
     jpReading: readJpReading(),
+    translateTo: readTranslateTo(),
     // Default ON: absent means "not set yet", so treat only an explicit "0" as off.
     smartCleanup: localStorage.getItem(KEYS.smartCleanup) !== "0",
     serverEnabled: false,
@@ -165,6 +178,13 @@ export function setSmartCleanup(on: boolean) {
   emit();
 }
 
+export function setTranslateTo(lang: TranslateTo) {
+  if (lang === "off") localStorage.removeItem(KEYS.translateTo);
+  else localStorage.setItem(KEYS.translateTo, lang);
+  snapshot.translateTo = lang;
+  emit();
+}
+
 export type Settings = State & {
   // True when AI features should be offered at all: the server has a key OR the
   // user pasted their own.
@@ -175,6 +195,7 @@ export type Settings = State & {
   setOrcaModel: typeof setOrcaModel;
   setJpReading: typeof setJpReading;
   setSmartCleanup: typeof setSmartCleanup;
+  setTranslateTo: typeof setTranslateTo;
   refreshStatus: typeof refreshStatus;
 };
 
@@ -197,6 +218,7 @@ export function useSettings(): Settings {
     setOrcaModel,
     setJpReading,
     setSmartCleanup,
+    setTranslateTo,
     refreshStatus,
   };
 }

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseQueries } from "@/lib/aiSuggest";
 import { aiJSONBatch, chunk } from "@/lib/aiCall";
+import { alignTranslation, alreadyInLang } from "@/lib/translate";
+import { isTranslateLang } from "@/lib/translateLangs";
 import { hasKana, alignRomaji } from "@/lib/romanize";
 import { coerceFurigana } from "@/lib/furigana";
 import {
@@ -72,6 +74,34 @@ describe("aiJSONBatch (chunked song = one quota unit)", () => {
     });
     expect(out).toEqual([["r0"], ["r1"]]);
     expect(fetchMock.mock.calls.length).toBe(2);
+  });
+});
+
+describe("translation helpers", () => {
+  it("isTranslateLang accepts known codes, rejects others", () => {
+    expect(isTranslateLang("en")).toBe(true);
+    expect(isTranslateLang("zh-Hant")).toBe(true);
+    expect(isTranslateLang("xx")).toBe(false);
+    expect(isTranslateLang(null)).toBe(false);
+  });
+
+  it("alignTranslation forces length and coerces like alignRomaji", () => {
+    expect(alignTranslation([" hi ", 5, null], 3)).toEqual(["hi", "", ""]);
+    expect(alignTranslation(["a", "b", "c"], 2)).toEqual(["a", "b"]);
+  });
+
+  it("alreadyInLang skips only when script reliably matches the target", () => {
+    // Japanese target: kana present ⇒ already Japanese
+    expect(alreadyInLang(["夜に駆ける"], "ja")).toBe(true);
+    // Chinese target: Han with no kana/hangul ⇒ already Chinese
+    expect(alreadyInLang(["告白气球"], "zh")).toBe(true);
+    // Chinese target but kana present ⇒ Japanese, so NOT already Chinese → translate
+    expect(alreadyInLang(["夜に駆ける"], "zh")).toBe(false);
+    // Korean target
+    expect(alreadyInLang(["안녕하세요"], "ko")).toBe(true);
+    // Latin-script targets: never auto-skip (can't tell apart by script)
+    expect(alreadyInLang(["Hello world"], "en")).toBe(false);
+    expect(alreadyInLang(["Hola mundo"], "es")).toBe(false);
   });
 });
 

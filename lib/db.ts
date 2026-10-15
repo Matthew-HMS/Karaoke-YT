@@ -348,6 +348,53 @@ export function putCachedFurigana(
   });
 }
 
+// ---- Translation cache (lyrics translated to a target language) ----
+// Like the romaji cache, but keyed by (videoId, lang) because the same song has a
+// different translation per target language. `data` is a JSON string[] aligned
+// 1:1 with the lyric lines (see lib/translate.ts). Reused while `ver` matches.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS translation (
+    videoId   TEXT NOT NULL,
+    lang      TEXT NOT NULL,
+    data      TEXT NOT NULL,
+    fetchedAt INTEGER NOT NULL,
+    ver       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (videoId, lang)
+  );
+`);
+
+const getTranslationStmt = db.prepare(
+  `SELECT data, ver FROM translation WHERE videoId = ? AND lang = ?`
+);
+
+export function getCachedTranslation(videoId: string, lang: string): string[] | null {
+  const row = getTranslationStmt.get(videoId, lang) as
+    | { data: string; ver: number }
+    | undefined;
+  if (!row || row.ver !== READING_CACHE_VERSION) return null; // miss / stale version
+  return JSON.parse(row.data) as string[];
+}
+
+const putTranslationStmt = db.prepare(
+  `INSERT INTO translation (videoId, lang, data, fetchedAt, ver)
+   VALUES (@videoId, @lang, @data, @fetchedAt, @ver)
+   ON CONFLICT(videoId, lang) DO UPDATE SET data = @data, fetchedAt = @fetchedAt, ver = @ver`
+);
+
+export function putCachedTranslation(
+  videoId: string,
+  lang: string,
+  lines: string[]
+): void {
+  putTranslationStmt.run({
+    videoId,
+    lang,
+    data: JSON.stringify(lines),
+    fetchedAt: Date.now(),
+    ver: READING_CACHE_VERSION,
+  });
+}
+
 // ---- AI free-use quota ----
 // How many AI calls an identity has spent on the SERVER's shared OrcaRouter key.
 // `id` is the signed-in user id when available, else a per-device guest id.
