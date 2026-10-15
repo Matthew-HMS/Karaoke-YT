@@ -143,6 +143,20 @@ async function generateAndSend(videoId: string): Promise<void> {
 // the queue. Resets on restart (so genuinely-transient ones get another chance).
 const fails = new Map<string, number>();
 
+// Tell the server to DROP a video we've given up on, so it's removed from the
+// pending list for good (not just skipped this session). Best-effort.
+async function dropPending(videoId: string): Promise<void> {
+  try {
+    await fetch(`${BASE}/api/reference/pending`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ videoId }),
+    });
+  } catch {
+    // network blip — the in-memory skip still keeps it out of this session
+  }
+}
+
 async function tick(): Promise<void> {
   const res = await fetch(`${BASE}/api/reference/pending`, { headers: auth });
   if (!res.ok) throw new Error(`pending HTTP ${res.status}`);
@@ -162,7 +176,11 @@ async function tick(): Promise<void> {
     } catch (e) {
       const n = (fails.get(id) ?? 0) + 1;
       fails.set(id, n);
-      const note = n >= MAX_FAILS ? ` — giving up (failed ${n}×)` : "";
+      let note = "";
+      if (n >= MAX_FAILS) {
+        await dropPending(id); // purge it server-side so it won't come back
+        note = ` — giving up (failed ${n}×), dropped from pending`;
+      }
       console.warn(`✗ ${id} — ${e instanceof Error ? e.message : String(e)}${note}`);
     }
     // Jittered gap before the next download (not after the last one).
