@@ -30,6 +30,13 @@ const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const SAMPLE_RATE = 16_000; // must match lib/reference.ts
 const FPS = 12; // must match lib/reference.ts
 const DECODE_TIMEOUT_MS = 120_000;
+// Same yt-dlp knobs as lib/reference.ts, for when this worker's IP gets
+// bot-walled too (HTTP 403 on audio download). `YTDLP_EXTRACTOR_ARGS` is the
+// usual fix — e.g. "youtube:player_client=android" downloads where the default
+// web client 403s. `YTDLP_PROXY`/`YTDLP_COOKIES` are the heavier fallbacks.
+const EXTRACTOR_ARGS = process.env.YTDLP_EXTRACTOR_ARGS || "";
+const PROXY = process.env.YTDLP_PROXY || "";
+const COOKIES = process.env.YTDLP_COOKIES || "";
 
 if (!BASE || !TOKEN) {
   console.error(
@@ -45,7 +52,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function decodePcm(videoId: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
     const url = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
-    const yt = spawn(YTDLP, ["-f", "bestaudio/best", "-o", "-", "--no-warnings", url]);
+    const yt = spawn(YTDLP, [
+      "-f", "bestaudio/best", "-o", "-", "--no-warnings",
+      ...(EXTRACTOR_ARGS ? ["--extractor-args", EXTRACTOR_ARGS] : []),
+      ...(PROXY ? ["--proxy", PROXY] : []),
+      ...(COOKIES ? ["--cookies", COOKIES] : []),
+      url,
+    ]);
     const ff = spawn(FFMPEG, [
       "-hide_banner", "-loglevel", "error",
       "-i", "pipe:0", "-ac", "1", "-ar", String(SAMPLE_RATE), "-f", "f32le", "pipe:1",

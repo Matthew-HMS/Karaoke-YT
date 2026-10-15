@@ -771,15 +771,20 @@ export function RecentTab({
   );
 }
 
-// Songs related to the currently-playing one (YouTube's Mix radio, fetched from
-// /api/related). Re-fetches whenever the playing video changes.
+// Songs related to `seed` (YouTube's Mix radio, fetched from /api/related).
+// Re-fetches whenever the seed video changes. The seed is the playing song, or
+// — once the queue runs dry — the last song this room played, so the list
+// keeps offering something to queue up instead of going blank. `stale` says
+// which of the two we're showing.
 function RelatedTab({
-  nowPlaying,
+  seed,
+  stale,
   onAdd,
   onStar,
   starred,
 }: {
-  nowPlaying: QueueItem;
+  seed: QueueItem;
+  stale: boolean;
   onAdd: (r: SearchResult) => void;
   onStar: (r: SearchResult) => void;
   starred: Set<string>;
@@ -791,8 +796,8 @@ function RelatedTab({
     let active = true;
     setLoading(true);
     const params = new URLSearchParams({
-      videoId: nowPlaying.videoId,
-      title: nowPlaying.title,
+      videoId: seed.videoId,
+      title: seed.title,
     });
     const region = detectRegion();
     if (region) params.set("region", region);
@@ -804,7 +809,7 @@ function RelatedTab({
     return () => {
       active = false;
     };
-  }, [nowPlaying.videoId, nowPlaying.title]);
+  }, [seed.videoId, seed.title]);
 
   if (loading) return <p className="text-sm text-white/40">Finding related songs…</p>;
   if (items.length === 0)
@@ -815,17 +820,24 @@ function RelatedTab({
     );
 
   return (
-    <ul className="space-y-2">
-      {items.map((r) => (
-        <SongRow
-          key={r.videoId}
-          song={r}
-          onAdd={onAdd}
-          onStar={onStar}
-          starred={starred.has(r.videoId)}
-        />
-      ))}
-    </ul>
+    <>
+      {stale && (
+        <p className="mb-2 line-clamp-1 text-xs text-white/30">
+          Based on the last song played — {seed.title}
+        </p>
+      )}
+      <ul className="space-y-2">
+        {items.map((r) => (
+          <SongRow
+            key={r.videoId}
+            song={r}
+            onAdd={onAdd}
+            onStar={onStar}
+            starred={starred.has(r.videoId)}
+          />
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -925,6 +937,7 @@ let lastSub: SubTab = "next";
 export function PlayerTab({
   queue,
   nowPlaying,
+  history = [],
   player,
   onRemove,
   onReorder,
@@ -937,6 +950,7 @@ export function PlayerTab({
 }: {
   queue: QueueItem[];
   nowPlaying: QueueItem | null;
+  history?: QueueItem[]; // most-recent first; seeds Related when nothing is playing
   player: { status: string; currentTimeSec: number; durationSec: number } | null;
   onRemove: (id: string) => void;
   onReorder: (order: string[]) => void;
@@ -971,6 +985,10 @@ export function PlayerTab({
 
   // Commit the final order to the server when a drag ends.
   const commitOrder = () => onReorder(itemsRef.current.map((it) => it.id));
+
+  // Related keeps working after the queue empties: fall back to the last song
+  // this room played, so you still get suggestions to refill the queue with.
+  const relatedSeed = nowPlaying ?? history[0] ?? null;
 
   const SUB_TABS: { key: SubTab; label: string }[] = [
     { key: "next", label: `Queue ${items.length}` },
@@ -1066,16 +1084,17 @@ export function PlayerTab({
           ))}
 
         {sub === "related" &&
-          (nowPlaying ? (
+          (relatedSeed ? (
             <RelatedTab
-              nowPlaying={nowPlaying}
+              seed={relatedSeed}
+              stale={!nowPlaying}
               onAdd={onAdd}
               onStar={onStar}
               starred={starred}
             />
           ) : (
             <p className="text-sm text-white/30">
-              Nothing playing yet — related songs show for the current song.
+              Nothing played yet — related songs show once a song has started.
             </p>
           ))}
       </div>

@@ -220,6 +220,18 @@ REFERENCE_INGEST_TOKEN="<same token as the cluster Secret>" \
 npx tsx scripts/generate-worker.ts
 ```
 
+> **If the worker's IP is bot-walled too** (yt-dlp fails with `HTTP Error 403:
+> Forbidden`, so no contours ever land), add `YTDLP_EXTRACTOR_ARGS` to the worker's
+> env — `youtube:player_client=android` downloads where the default web client 403s
+> (verified 2026-10-15). The worker also reads `YTDLP_PROXY` and `YTDLP_COOKIES` as
+> heavier fallbacks:
+>
+> ```bash
+> YTDLP_EXTRACTOR_ARGS="youtube:player_client=android" \
+> REFERENCE_BASE_URL="…" REFERENCE_INGEST_TOKEN="…" \
+> npx tsx scripts/generate-worker.ts
+> ```
+
 It polls every ~15 s, generates each pending contour locally, and pushes it up
 (logs `✓ <videoId> — N frames in Xs`). Leave it running under **systemd** so it
 survives reboots:

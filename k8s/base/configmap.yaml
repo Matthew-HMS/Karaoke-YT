@@ -18,9 +18,10 @@ data:
   # authenticates that worker. Set to "0"/unset to generate on the cluster again.
   REFERENCE_OFFLOAD: "1"
   # The YTDLP_* settings below only matter when NOT offloading (they tune the
-  # cluster's own yt-dlp). Kept for the fallback path.
+  # cluster's own yt-dlp). Kept for the fallback path. `android` downloads where
+  # the default/tv clients now 403 (verified 2026-10-15).
   YTDLP_COOKIES: "/secrets/yt/cookies.txt"
-  YTDLP_EXTRACTOR_ARGS: "youtube:player_client=tv"
+  YTDLP_EXTRACTOR_ARGS: "youtube:player_client=android"
   YTDLP_PROXY: ""
   # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
   # redirects). Replace EXAMPLE everywhere before applying.

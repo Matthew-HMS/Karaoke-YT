@@ -936,6 +936,7 @@ export default function HostPage() {
                   <PlayerTab
                     queue={queue}
                     nowPlaying={nowPlaying}
+                    history={state?.history ?? []}
                     player={player}
                     onRemove={removeSong}
                     onReorder={reorder}

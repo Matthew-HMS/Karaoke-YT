@@ -227,6 +227,7 @@ export default function RemotePage() {
               <PlayerTab
                 queue={state?.queue ?? []}
                 nowPlaying={state?.nowPlaying ?? null}
+                history={state?.history ?? []}
                 player={livePlayer ?? state?.playerState ?? null}
                 onRemove={removeSong}
                 onReorder={reorder}

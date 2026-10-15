@@ -43,8 +43,9 @@ instantly **seek to any part** of a song.
   (seeds expanded via YouTube's Mix radio, ranked by cross-seed agreement, with
   your **favorites filtered out** — songs you've only played before can still
   resurface, since people like singing the same songs again). The Player tab's
-  **Related** sub-tab shows
-  songs related to whatever's currently playing. Related/For-you are quota-free
+  **Related** sub-tab shows songs related to whatever's currently playing — and
+  when the queue runs dry it keeps suggesting, seeded off the last song the room
+  played, so there's always something to queue up next. Related/For-you are quota-free
   (yt-dlp); hour-long compilations and live-radio streams are filtered out (real
   songs, ≤10 min) so every pick is a single singable song.
 - 🎶 **Lyrics** — **swipe** the now-playing card left to flip from the song +
