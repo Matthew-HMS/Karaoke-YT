@@ -31,6 +31,11 @@ const POLL_MS = Number(process.env.POLL_MS || 15_000);
 const MAX_PER_TICK = Number(process.env.GEN_MAX_PER_TICK || 3);
 const GEN_GAP_MS = Number(process.env.GEN_GAP_MS || 8_000);
 const GEN_GAP_JITTER_MS = Number(process.env.GEN_GAP_JITTER_MS || 7_000);
+// Give up on a video after this many failures IN THIS SESSION, so a dead or
+// unfetchable-here video at the head of the pending list doesn't get retried
+// forever and starve the live songs behind it. (Server still lists it; we just
+// stop attempting it until the worker restarts.)
+const MAX_FAILS = Number(process.env.GEN_MAX_FAILS || 3);
 const YTDLP = process.env.YTDLP_PATH || "yt-dlp";
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const SAMPLE_RATE = 16_000; // must match lib/reference.ts
@@ -134,25 +139,40 @@ async function generateAndSend(videoId: string): Promise<void> {
   console.log(`✓ ${videoId} — ${midis.length} frames in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 }
 
+// Videos that failed MAX_FAILS times this session — skipped so they don't block
+// the queue. Resets on restart (so genuinely-transient ones get another chance).
+const fails = new Map<string, number>();
+
 async function tick(): Promise<void> {
   const res = await fetch(`${BASE}/api/reference/pending`, { headers: auth });
   if (!res.ok) throw new Error(`pending HTTP ${res.status}`);
   const { videoIds } = (await res.json()) as { videoIds: string[] };
-  // Only take a few per cycle and SPACE them out. Downloading the whole backlog
-  // back-to-back from one IP is what makes YouTube flag it (→ "not available" /
-  // "sign in to confirm you're not a bot"). A small batch + a randomized gap
-  // between downloads looks far less bot-like, so more contours actually land.
-  const batch = videoIds.slice(0, MAX_PER_TICK);
+  // Drop the ones we've given up on, THEN take a small paced batch. Downloading
+  // the whole backlog back-to-back from one IP is what makes YouTube flag it
+  // (→ "not available" / "sign in"); a small batch + a randomized gap looks far
+  // less bot-like, so more contours actually land.
+  const live = videoIds.filter((id) => (fails.get(id) ?? 0) < MAX_FAILS);
+  const skipped = videoIds.length - live.length;
+  const batch = live.slice(0, MAX_PER_TICK);
   for (let i = 0; i < batch.length; i++) {
+    const id = batch[i];
     try {
-      await generateAndSend(batch[i]);
+      await generateAndSend(id);
+      fails.delete(id); // success → forget any earlier failures
     } catch (e) {
-      console.warn(`✗ ${batch[i]} — ${e instanceof Error ? e.message : String(e)}`);
+      const n = (fails.get(id) ?? 0) + 1;
+      fails.set(id, n);
+      const note = n >= MAX_FAILS ? ` — giving up (failed ${n}×)` : "";
+      console.warn(`✗ ${id} — ${e instanceof Error ? e.message : String(e)}${note}`);
     }
     // Jittered gap before the next download (not after the last one).
     if (i < batch.length - 1) {
       await sleep(GEN_GAP_MS + Math.floor(Math.random() * GEN_GAP_JITTER_MS));
     }
+  }
+  if (batch.length === 0 && skipped > 0) {
+    // Nothing left to try — everything pending has been given up on this session.
+    console.log(`(idle: ${skipped} pending video(s) skipped after repeated failures)`);
   }
 }
 
