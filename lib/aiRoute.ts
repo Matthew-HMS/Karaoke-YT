@@ -4,11 +4,17 @@
 //   LlmBadKey       → 401 { code: "bad_key" }
 //   LlmNoCredits    → 402 { code: "no_credits" }
 //   LlmFreeExhausted→ 402 { code: "free_exhausted" }
-//   LlmRateLimited  → 429 { code: "rate_limited" }
+//   LlmRateLimited  → 429 { code: "rate_limited", retryAfter? }
 //   LlmTimeout      → 504 { code: "slow_model" }
 //   anything else   → 502 { error: <message> }
 // `extra` carries the route's empty payload (e.g. { results: [] }) so the shape
 // stays consistent with its success response.
+//
+// One twist: when the paid fallback was tried behind a rate-limit/exhaustion and
+// ALSO failed, the code becomes "backup_failed" instead. The status stays the
+// same, but the hint has to change — retrying can't help until the deployer fixes
+// the backup key. The fallback's own reason stays server-side (lib/llm.ts logs
+// it), so a guest never sees the owner's billing detail.
 
 import { NextResponse } from "next/server";
 import { LlmBadKey, LlmFreeExhausted, LlmNoCredits, LlmRateLimited, LlmTimeout } from "./llm";
@@ -38,13 +44,23 @@ export function aiErrorResponse(
   }
   if (err instanceof LlmFreeExhausted) {
     return NextResponse.json(
-      { error: "free_exhausted", code: "free_exhausted", ...extra },
+      {
+        error: "free_exhausted",
+        code: err.fallbackFailed ? "backup_failed" : "free_exhausted",
+        ...extra,
+      },
       { status: 402 }
     );
   }
   if (err instanceof LlmRateLimited) {
     return NextResponse.json(
-      { error: "rate_limited", code: "rate_limited", ...extra },
+      {
+        error: "rate_limited",
+        code: err.fallbackFailed ? "backup_failed" : "rate_limited",
+        // Hours, for a saturated free pool — the UI names the real wait.
+        retryAfter: err.retryAfterSeconds,
+        ...extra,
+      },
       { status: 429 }
     );
   }

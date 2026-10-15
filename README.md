@@ -137,9 +137,17 @@ instantly **seek to any part** of a song.
     **comma-separated pool** of keys and fails over to the next on a 429.
     After that a user pastes **their own** free key in ⚙ Settings (kept on their
     device; a ⧉ referral button links out to get one). The deployer can set a
-    private `AI_BYPASS_SECRET` word to use the server key with no limit. Rate
-    limits / quota exhaustion surface as a friendly "try again / add your key"
-    hint; without any key, AI affordances are hidden and the rest works unchanged.
+    private `AI_BYPASS_SECRET` word to use the server key with no limit.
+    Quota exhaustion surfaces as a friendly "try again / add your key" hint;
+    without any key, AI affordances are hidden and the rest works unchanged.
+  - 💳 **Paid fallback** — the free model's capacity is capped **globally, not per
+    key**: when it's saturated *every* key gets a 429 whose cooldown runs to
+    **hours**, credits or not. So a free-model 429 retries once on a fixed cheap
+    paid model (`ORCAROUTER_PAID_MODEL`, fractions of a cent per song) instead of
+    dead-ending. Shared-key use (guests *and* `AI_BYPASS_SECRET`) falls back to
+    `ORCAROUTER_PAID_KEY`; a user's **own** key falls back on *their* key, so
+    pasting a credited key is enough to ride out a cooldown — no model to pick.
+    Set a Model in ⚙ Settings and that choice is honored as-is, no fallback.
 - ⚙ **Settings overlay** — a per-device settings panel (the ⚙ button) holding the
   AI key + toggles and the room's **Target-line** toggle.
 - 🚫 **Embedding-safe** — auto-skips videos that can't be embedded.
@@ -207,6 +215,10 @@ Environment (`.env.local`):
   Users can also paste their own key in ⚙ Settings. Optional overrides:
   `ORCAROUTER_API_BASE_URL` (default `https://api.orcarouter.ai/v1`),
   `ORCAROUTER_MODEL` (default `orcarouter/free`).
+- `ORCAROUTER_PAID_KEY` — *optional* **credited** key used only when the free
+  model is in one of its (global, multi-hour) cooldowns, on the fixed cheap
+  `ORCAROUTER_PAID_MODEL` (default `deepseek/deepseek-v4-flash`). Without it,
+  shared-key AI simply degrades when the free pool is saturated. Server-only.
 - Trending (signed-out "Top hits") uses YouTube's **Most Popular** music chart
   via the Data API when `YOUTUBE_API_KEY` is set — quota-cheap (~1 unit/region,
   refreshed hourly). `TRENDING_REGION` (*optional*, default `TW,US,JP`) is a

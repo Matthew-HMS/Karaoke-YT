@@ -1,8 +1,10 @@
 // OrcaRouter client (server-only). OrcaRouter is an OpenAI-compatible gateway
 // (https://api.orcarouter.ai/v1) the project accesses through its OSS-program
-// key. We always use a FREE model (`orcarouter/free`, difficulty-routed across
-// the workspace's free models, billed at nothing, capped by request rate), so
-// AI features never cost anything — a rate-limited request just degrades.
+// key. The default model is FREE (`orcarouter/free`, difficulty-routed across
+// the workspace's free models, billed at nothing) but its capacity is capped
+// GLOBALLY, not per key: when it's saturated every key gets 429 with a cooldown
+// measured in HOURS, credits or not. So a free-model 429 falls back to a fixed
+// cheap PAID model (fractions of a cent per song) rather than dead-ending.
 //
 // KEY SAFETY: the server default key (ORCAROUTER_API_KEY) is read only here and
 // MUST NEVER be sent to the browser. A request may carry the *user's own* key
@@ -28,18 +30,33 @@ const PAID_MODEL = process.env.ORCAROUTER_PAID_MODEL || "deepseek/deepseek-v4-fl
 // margin for a longer track plus a 429 backoff retry.
 const TIMEOUT_MS = 20_000;
 
+// Base for every OrcaRouter failure we classify. `fallbackFailed` is set by
+// llmJSON when the PAID fallback was tried behind this error and also failed, so
+// routes can tell "free is busy, retrying may work" apart from "free is busy AND
+// the paid safety net is broken" — which needs the deployer, not the singer.
+export class LlmError extends Error {
+  // The fallback's own failure reason. Server-side detail for the log/decision;
+  // never put in a response body (it's the owner's billing problem, not theirs).
+  fallbackFailed?: string;
+}
+
 // Thrown on a 429 (OrcaRouter's free tier is rate-limited, error code
 // `free_rate_limited`). Callers catch this to degrade quietly rather than fail.
-export class LlmRateLimited extends Error {
-  constructor(message = "OrcaRouter free-tier rate limit hit") {
+// `retryAfterSeconds` is the cooldown the gateway reported, when it did — for the
+// free model that is routinely HOURS, so routes pass it to the UI instead of
+// promising "try again shortly".
+export class LlmRateLimited extends LlmError {
+  readonly retryAfterSeconds?: number;
+  constructor(message = "OrcaRouter free-tier rate limit hit", retryAfterSeconds?: number) {
     super(message);
     this.name = "LlmRateLimited";
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
 // Thrown on a 402 for a PAID model the key has no credits for (OrcaRouter's
 // "out of credits"). Routes turn this into "add credits / pick the free model".
-export class LlmNoCredits extends Error {
+export class LlmNoCredits extends LlmError {
   constructor(message = "OrcaRouter key is out of credits for this model") {
     super(message);
     this.name = "LlmNoCredits";
@@ -49,7 +66,7 @@ export class LlmNoCredits extends Error {
 // Thrown on a 401/403 — the key is invalid/unauthorized, or (403
 // model_access_denied) valid but not scoped for the requested model. Routes turn
 // this into a clear "check your key / model" hint instead of a raw 502.
-export class LlmBadKey extends Error {
+export class LlmBadKey extends LlmError {
   constructor(message = "OrcaRouter key was rejected (invalid or wrong scope)") {
     super(message);
     this.name = "LlmBadKey";
@@ -59,7 +76,7 @@ export class LlmBadKey extends Error {
 // Thrown when a request exceeds the timeout — usually a slow *reasoning* model
 // that ignores reasoning_effort:"none" (e.g. qwen3.5-flash burns ~1-2k thinking
 // tokens and takes 15-40s). Routes turn this into "pick a faster model".
-export class LlmTimeout extends Error {
+export class LlmTimeout extends LlmError {
   constructor(message = "OrcaRouter request timed out (model too slow)") {
     super(message);
     this.name = "LlmTimeout";
@@ -69,7 +86,7 @@ export class LlmTimeout extends Error {
 // Thrown when the FREE allowance is used up across all keys (402
 // free_quota_exhausted — the per-key daily cap). Distinct from a transient 429:
 // retrying won't help today, so routes tell the user it's used up for now.
-export class LlmFreeExhausted extends Error {
+export class LlmFreeExhausted extends LlmError {
   constructor(message = "OrcaRouter free allowance is used up") {
     super(message);
     this.name = "LlmFreeExhausted";
@@ -108,15 +125,16 @@ export function paidFallback(): { keys: string[]; model: string } | null {
 //   "free"      — using the SERVER key on the shared free quota (counted).
 export type AiMode = "user" | "unlimited" | "free";
 // `keys` is tried in order with failover on 429 (one entry for a user key; the
-// whole server pool for free/unlimited). `fallback`, when present, is the PAID
-// key+model tried only after the primary pool is exhausted/rate-limited (so the
-// shared AI "always works" at a few cents instead of just failing). A user's own
-// key gets no fallback — they spend (and choose) for themselves.
+// whole server pool for free/unlimited). `fallback`, when present, is the cheap
+// PAID key+model tried only after the primary pool is exhausted/rate-limited, so
+// AI "always works" for fractions of a cent instead of just failing. `own: true`
+// marks a fallback that spends the CALLER'S key rather than the owner's, which
+// decides whose failure gets surfaced if the fallback fails too (see llmJSON).
 export type AiAccess = {
   keys: string[];
   mode: AiMode;
   model: string;
-  fallback?: { keys: string[]; model: string };
+  fallback?: { keys: string[]; model: string; own?: boolean };
 };
 
 // The model every SHARED-key request uses — `orcarouter/free`, the only free one.
@@ -142,16 +160,33 @@ export function resolveAccess(
   const fallback = paidFallback() ?? undefined; // paid safety net for shared-key use
 
   // Owner's magic word → the shared pool with no quota, LOCKED to the free model
-  // (`orcarouter/free` — the only genuinely-free one). The bypass is a free
-  // convenience, never a way to spend: no model override, no paid fallback. Only a
-  // pasted OWN key unlocks paid models.
+  // (`orcarouter/free` — the only genuinely-free one); only a pasted OWN key
+  // unlocks paid models. It DOES get the paid fallback: the bypass is the
+  // deployer, whose credited key this is, and being throttled on the free pool
+  // while their own paid key sits unused is just broken. The fallback's model is
+  // fixed and cheap (~$0.0003/song), so the spend stays capped either way.
   if (own && secret && own === secret) {
-    return pool.length ? { keys: pool, mode: "unlimited", model: DEFAULT_MODEL } : null;
+    return pool.length
+      ? { keys: pool, mode: "unlimited", model: DEFAULT_MODEL, fallback }
+      : null;
   }
   // A real user-supplied key → theirs to spend, no quota, and they may pick the
-  // model (falling back to the free default). No paid fallback: not our key.
+  // model. Picking one is taken at face value: that model, no second guess.
+  // Picking NONE used to mean `orcarouter/free` with no safety net, which is a
+  // dead end whenever the free pool is in one of its multi-hour cooldowns — the
+  // key's credits never got a chance to help, which reads as "my paid key is
+  // broken". So an unspecified model keeps the free default but falls back to the
+  // cheap paid model ON THEIR OWN KEY: credited keys just work, and a free key
+  // surfaces the existing "needs credits" hint instead of a bare rate limit.
   if (own) {
-    return { keys: [own], mode: "user", model: reqModel?.trim() || DEFAULT_MODEL };
+    const picked = reqModel?.trim();
+    if (picked) return { keys: [own], mode: "user", model: picked };
+    return {
+      keys: [own],
+      mode: "user",
+      model: DEFAULT_MODEL,
+      fallback: { keys: [own], model: PAID_MODEL, own: true },
+    };
   }
   // Otherwise the shared server key pool under the free quota — always free model,
   // with the paid fallback behind it so a busy/exhausted pool still serves.
@@ -214,6 +249,30 @@ const RETRY_DELAYS_MS = [1500, 3000];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// A 429 tells us how long the cooldown actually is, in
+// `error.metadata.retry_after_seconds` (and the `Retry-After` header). It matters
+// because the free pool's cooldown is often hours: there is no point spending the
+// request's remaining budget on backoff rounds that cannot possibly clear.
+function parseRetryAfter(text: string, headers?: Headers): number | undefined {
+  try {
+    const n = (
+      JSON.parse(text) as { error?: { metadata?: { retry_after_seconds?: unknown } } }
+    )?.error?.metadata?.retry_after_seconds;
+    if (typeof n === "number" && n > 0) return n;
+  } catch {
+    // not JSON (a proxy error page) → try the header
+  }
+  // Optional-chained: the value is only a hint for the message, so a response
+  // without usable headers must degrade to "no cooldown reported", never throw
+  // and turn a plain rate limit into a 502.
+  const h = Number(headers?.get("retry-after"));
+  return Number.isFinite(h) && h > 0 ? h : undefined;
+}
+
+// Longest cooldown we'll sit out with a backoff retry. Our rounds total ~4.5s, so
+// anything beyond this is the pool being saturated, not a momentary burst.
+const MAX_WORTH_RETRYING_SEC = 10;
+
 // Try one pool of keys with one model until it serves a JSON reply. On a 429 we
 // fail over to the next key, and only when EVERY key is 429 do we back off and
 // retry the whole pool. Throws LlmRateLimited when the pool stays rate-limited,
@@ -238,6 +297,10 @@ async function runPool<T>(
     // (Do NOT use "low": the free tier rejects it with 402.)
     reasoning_effort: "none",
   });
+
+  // Longest cooldown any key reported, across rounds — decides whether retrying
+  // is worth anything and is handed to the UI so it can name a real wait.
+  let retryAfter: number | undefined;
 
   for (let round = 0; ; round++) {
     // Per-round tally of WHY no key served us, so we can decide whether to retry.
@@ -265,7 +328,11 @@ async function runPool<T>(
 
       if (res.status === 429) {
         sawRateLimit = true;
-        continue; // this key is momentarily busy → try the next key
+        const after = parseRetryAfter(await res.text().catch(() => ""), res.headers);
+        if (after !== undefined && (retryAfter === undefined || after > retryAfter)) {
+          retryAfter = after;
+        }
+        continue; // this key is busy → try the next key
       }
       if (res.status === 401 || res.status === 403) {
         // Bad/unauthorized key, or a valid key without access to this model.
@@ -294,15 +361,18 @@ async function runPool<T>(
       return extractJson<T>(content);
     }
 
-    // No key served us this round. A rate-limited key might recover, so back off
-    // and retry the whole pool. If the ONLY problem is daily-exhausted keys,
-    // retrying is pointless — surface that distinctly right away.
-    if (sawRateLimit && round < RETRY_DELAYS_MS.length) {
+    // No key served us this round. A briefly rate-limited key might recover, so
+    // back off and retry the whole pool — but only when the reported cooldown
+    // could actually clear in that time; against a multi-hour free-pool cooldown
+    // the rounds just burn the caller's budget and then fail anyway. If the ONLY
+    // problem is daily-exhausted keys, retrying is pointless either way.
+    const worthRetrying = retryAfter === undefined || retryAfter <= MAX_WORTH_RETRYING_SEC;
+    if (sawRateLimit && worthRetrying && round < RETRY_DELAYS_MS.length) {
       await sleep(RETRY_DELAYS_MS[round]);
       continue;
     }
     if (sawFreeExhausted && !sawRateLimit) throw new LlmFreeExhausted();
-    throw new LlmRateLimited();
+    throw new LlmRateLimited(undefined, retryAfter);
   }
 }
 
@@ -318,7 +388,7 @@ export async function llmJSON<T>(opts: {
   messages: Message[];
   keys: string[];
   model?: string;
-  fallback?: { keys: string[]; model: string };
+  fallback?: { keys: string[]; model: string; own?: boolean };
   signal?: AbortSignal;
 }): Promise<T> {
   const { messages, keys, model = MODEL, fallback } = opts;
@@ -336,9 +406,16 @@ export async function llmJSON<T>(opts: {
       try {
         return await runPool<T>(fallback.keys, fallback.model, messages, signal);
       } catch (fb) {
-        // Paid fallback failed too (e.g. the credited key is out of credits).
-        // Log for the owner, but show the caller the free-tier status instead.
+        // The fallback failed too. When it spent the CALLER'S own key, its failure
+        // is theirs to see and act on ("add credits"), so surface it directly.
+        // When it spent the OWNER'S paid key, the caller still gets the free-tier
+        // status — never the owner's billing detail — but we mark the error so
+        // routes can say the backup is down too, which retrying won't fix.
         console.warn("[llm] paid fallback failed:", fb);
+        if (fallback.own) throw fb;
+        if (primary instanceof LlmError) {
+          primary.fallbackFailed = fb instanceof Error ? fb.message : String(fb);
+        }
         throw primary;
       }
     }

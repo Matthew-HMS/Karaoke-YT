@@ -7,6 +7,7 @@
 // playback position the rest of the queue UI already has, so no extra wiring.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatWait } from "@/lib/format";
 import type { FuriganaSegment, LyricLine } from "@/lib/types";
 import { useSettings } from "@/lib/useSettings";
 
@@ -156,6 +157,7 @@ export function LyricsPanel({
           romaji?: unknown;
           code?: unknown;
           limit?: unknown;
+          retryAfter?: unknown;
         };
         if (mode === "furigana" && Array.isArray(d.furigana)) {
           setFurigana(d.furigana as FuriganaSegment[][]);
@@ -164,7 +166,9 @@ export function LyricsPanel({
         } else if (d.code === "bad_key") {
           setReadingNote("That OrcaRouter key was rejected — check it in ⚙ Settings (or clear it to use the free AI).");
         } else if (d.code === "no_credits") {
-          setReadingNote("That model needs credits on your key — clear the Model field in ⚙ Settings for the free one.");
+          setReadingNote("Your key has no credits for that model — add credits in ⚙ Settings, or wait for the free pool to reopen.");
+        } else if (d.code === "backup_failed") {
+          setReadingNote("Free AI is at capacity and the paid backup key failed too — the host needs to check it.");
         } else if (d.code === "free_exhausted") {
           setReadingNote("Free AI is used up for today — add credits or your own key in ⚙ Settings.");
         } else if (status === 402) {
@@ -173,7 +177,13 @@ export function LyricsPanel({
         } else if (d.code === "slow_model") {
           setReadingNote("That model was too slow (timed out). Pick a faster one in ⚙ Settings — e.g. qwen/qwen3.7-flash or deepseek/deepseek-v4-flash.");
         } else if (status === 429) {
-          setReadingNote("AI is busy — reading unavailable right now. Try again shortly.");
+          // The free model's cooldown is global and often hours long — name it.
+          const wait = typeof d.retryAfter === "number" ? formatWait(d.retryAfter) : null;
+          setReadingNote(
+            wait
+              ? `Free AI is at capacity — it reopens in about ${wait}. Add your own key (with credits) in ⚙ Settings to skip the wait.`
+              : "AI is busy — reading unavailable right now. Try again shortly."
+          );
         } else if (status >= 400) {
           // Any other failure (e.g. a 502) — don't fail silently.
           setReadingNote("Couldn't load the reading right now.");
@@ -216,11 +226,20 @@ export function LyricsPanel({
       .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
       .then(({ status, body }) => {
         if (!active) return;
-        const d = body as { translation?: unknown; code?: unknown };
+        const d = body as { translation?: unknown; code?: unknown; retryAfter?: unknown };
         if (Array.isArray(d.translation)) {
           setTranslation(d.translation as string[]);
         } else if (status >= 400 && d.code === "slow_model") {
           setReadingNote("That model was too slow (timed out). Pick a faster one in ⚙ Settings.");
+        } else if (d.code === "backup_failed") {
+          setReadingNote("Free AI is at capacity and the paid backup key failed too — the host needs to check it.");
+        } else if (status === 429) {
+          const wait = typeof d.retryAfter === "number" ? formatWait(d.retryAfter) : null;
+          setReadingNote(
+            wait
+              ? `Free AI is at capacity — it reopens in about ${wait}. Add your own key (with credits) in ⚙ Settings to skip the wait.`
+              : "AI is busy — translation unavailable right now. Try again shortly."
+          );
         }
         // translation === null (already in that language) → just show nothing.
         settings.refreshStatus();

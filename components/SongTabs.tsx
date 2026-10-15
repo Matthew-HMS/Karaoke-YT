@@ -11,7 +11,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { LyricsPanel } from "@/components/LyricsPanel";
 import { isValidPassword, normalizePassword } from "@/lib/code";
-import { formatTime } from "@/lib/format";
+import { formatTime, formatWait } from "@/lib/format";
 import { detectRegion } from "@/lib/region";
 import { useSettings } from "@/lib/useSettings";
 import type { PlayerCommand, QueueItem, SfxName } from "@/lib/types";
@@ -134,14 +134,19 @@ async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
 
 function aiErrorMessage(
   status: number,
-  data: { error?: unknown; code?: unknown; limit?: unknown },
+  data: { error?: unknown; code?: unknown; limit?: unknown; retryAfter?: unknown },
   freeLimit: number
 ): string {
   if (data.code === "bad_key") {
     return "That OrcaRouter key was rejected — check it in ⚙ Settings, or clear it to use the free AI. (If you set a Model, make sure your key has access to it.)";
   }
   if (data.code === "no_credits") {
-    return "That model needs credits on your OrcaRouter key. Add credits, or clear the Model field in ⚙ Settings to use the free one.";
+    // Reachable two ways: a paid Model the key can't pay for, or an unset Model
+    // whose free-pool fallback landed on the paid model. Don't assume either.
+    return "Your OrcaRouter key has no credits for that model. Add credits in ⚙ Settings, or wait for the free pool to reopen.";
+  }
+  if (data.code === "backup_failed") {
+    return "Free AI is at capacity and the paid backup key failed too — retrying won't help until the host checks it (the server log has the reason).";
   }
   if (data.code === "free_exhausted") {
     return "The free AI is used up for today. Add credits to the key (or paste your own key) in ⚙ Settings to keep going.";
@@ -154,7 +159,12 @@ function aiErrorMessage(
     return "That model was too slow and timed out. Pick a faster model in ⚙ Settings (e.g. qwen/qwen3.7-flash or deepseek/deepseek-v4-flash) — reasoning models like qwen3.5-flash are slow.";
   }
   if (status === 429) {
-    return "AI is busy right now — too many requests. Try again in a moment.";
+    // The free model's cooldown is global and often hours long, so name the real
+    // wait when the gateway reports one rather than promising "a moment".
+    const wait = typeof data.retryAfter === "number" ? formatWait(data.retryAfter) : null;
+    return wait
+      ? `Free AI is at capacity — it reopens in about ${wait}. Add your own key (with credits) in ⚙ Settings to skip the wait.`
+      : "AI is busy right now — too many requests. Try again in a moment.";
   }
   // 5xx (incl. a proxy/gateway HTML page that left `data` empty) → transient.
   if (status >= 500) {

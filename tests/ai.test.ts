@@ -8,6 +8,7 @@ import { coerceFurigana } from "@/lib/furigana";
 import {
   DEFAULT_MODEL,
   LlmBadKey,
+  LlmError,
   LlmFreeExhausted,
   LlmNoCredits,
   LlmRateLimited,
@@ -162,10 +163,15 @@ describe("resolveAccess (key + quota policy)", () => {
 
   it("uses the caller's own key with no quota (mode=user)", () => {
     process.env.ORCAROUTER_API_KEY = "sk-server";
+    delete process.env.ORCAROUTER_PAID_KEY;
+    // Their key, no quota — plus a paid-model fallback on that same key. It needs
+    // no ORCAROUTER_PAID_KEY: the fallback spends THEIR credits, so it's offered
+    // whether or not the deployer configured a paid key of their own.
     expect(resolveAccess("sk-mine")).toEqual({
       keys: ["sk-mine"],
       mode: "user",
       model: DEFAULT_MODEL,
+      fallback: { keys: ["sk-mine"], model: "deepseek/deepseek-v4-flash", own: true },
     });
   });
 
@@ -218,26 +224,49 @@ describe("resolveAccess (key + quota policy)", () => {
     expect(resolveAccess(undefined)).toBeNull();
   });
 
-  it("attaches the paid fallback to FREE mode only — not the bypass, not a user's own key", () => {
+  it("gives both shared-key modes the owner's paid fallback", () => {
     process.env.ORCAROUTER_API_KEY = "sk-server";
     process.env.AI_BYPASS_SECRET = "imsho";
     process.env.ORCAROUTER_PAID_KEY = "sk-paid-1, sk-paid-2";
+    const paid = { keys: ["sk-paid-1", "sk-paid-2"], model: "deepseek/deepseek-v4-flash" };
 
     // free mode (guests): shared pool, paid key as the fallback behind it
     expect(resolveAccess(undefined)).toEqual({
       keys: ["sk-server"],
       mode: "free",
       model: DEFAULT_MODEL,
-      fallback: { keys: ["sk-paid-1", "sk-paid-2"], model: "deepseek/deepseek-v4-flash" },
+      fallback: paid,
     });
-    // owner bypass: free-only, so NO paid fallback (it must never spend)
+    // owner bypass: same net. The free model's cooldown is global and hours long,
+    // so without this the deployer's own credited key sat unused while AI failed.
     expect(resolveAccess("imsho")).toEqual({
       keys: ["sk-server"],
       mode: "unlimited",
       model: DEFAULT_MODEL,
+      fallback: paid,
     });
-    // a user spending their own key does NOT get the owner's paid fallback
-    expect(resolveAccess("sk-mine")?.fallback).toBeUndefined();
+  });
+
+  it("falls a user's own key back to the paid model — on their key, not the owner's", () => {
+    process.env.ORCAROUTER_API_KEY = "sk-server";
+    process.env.ORCAROUTER_PAID_KEY = "sk-paid";
+
+    // No model picked → free default, with THEIR key behind it (`own: true`), so
+    // a free-pool cooldown doesn't dead-end a key that could have paid its way.
+    expect(resolveAccess("sk-mine")).toEqual({
+      keys: ["sk-mine"],
+      mode: "user",
+      model: DEFAULT_MODEL,
+      fallback: { keys: ["sk-mine"], model: "deepseek/deepseek-v4-flash", own: true },
+    });
+    // The owner's paid key is never offered to a user's request.
+    expect(resolveAccess("sk-mine")?.fallback?.keys).toEqual(["sk-mine"]);
+    // A model they picked is taken at face value — no second guess, no fallback.
+    expect(resolveAccess("sk-mine", "qwen/qwen3.7-flash")).toEqual({
+      keys: ["sk-mine"],
+      mode: "user",
+      model: "qwen/qwen3.7-flash",
+    });
   });
 });
 
@@ -526,5 +555,66 @@ describe("llmJSON (OrcaRouter client)", () => {
         fallback: { keys: ["sk-paid"], model: "deepseek-v4-flash" },
       })
     ).rejects.toBeInstanceOf(LlmFreeExhausted);
+  });
+
+  it("marks the error when the OWNER's paid fallback also failed", async () => {
+    // Same as above, but assert the breadcrumb routes use to say "the backup is
+    // down too" — the caller still sees the free-tier error, not the billing one.
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const auth = (init.headers as Record<string, string>).Authorization;
+      return auth === "Bearer sk-free"
+        ? {
+            status: 402,
+            ok: false,
+            text: async (): Promise<string> => '{"error":{"code":"free_quota_exhausted"}}',
+          }
+        : { status: 401, ok: false, text: async (): Promise<string> => "bad paid key" };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await llmJSON({
+      keys: ["sk-free"],
+      messages: [{ role: "user", content: "hi" }],
+      fallback: { keys: ["sk-paid"], model: "deepseek-v4-flash" },
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmFreeExhausted);
+    expect((err as LlmError).fallbackFailed).toBeTruthy();
+  });
+
+  it("surfaces the fallback's OWN error when it spent the caller's key", async () => {
+    // `own: true` → the fallback is the user's key, so "no credits" is theirs to
+    // act on; hiding it behind the free-tier status would be misleading.
+    const fetchMock = vi.fn(async () => ({
+      status: 402,
+      ok: false,
+      text: async (): Promise<string> => '{"error":{"message":"out of credits"}}',
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      llmJSON({
+        keys: ["sk-mine"],
+        messages: [{ role: "user", content: "hi" }],
+        fallback: { keys: ["sk-mine"], model: "deepseek-v4-flash", own: true },
+      })
+    ).rejects.toBeInstanceOf(LlmNoCredits);
+  });
+
+  it("skips the backoff rounds when the 429 reports a cooldown of hours", async () => {
+    // A saturated free pool reports retry_after_seconds in the thousands. Backing
+    // off 1.5s + 3s cannot clear that, so we must fail fast and carry the number.
+    const fetchMock = vi.fn(async () => ({
+      status: 429,
+      ok: false,
+      headers: new Headers({ "retry-after": "19084" }),
+      text: async (): Promise<string> =>
+        '{"error":{"code":"free_rate_limited","metadata":{"retry_after_seconds":19084}}}',
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await llmJSON({
+      keys: ["sk-free"],
+      messages: [{ role: "user", content: "hi" }],
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmRateLimited);
+    expect((err as LlmRateLimited).retryAfterSeconds).toBe(19084);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // one try, no pointless rounds
   });
 });
