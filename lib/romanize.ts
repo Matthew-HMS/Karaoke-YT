@@ -9,6 +9,7 @@
 // only ever romanised once.
 
 import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
+import { linesHash, singleFlight } from "./singleflight";
 import type { AiAccess } from "./llm";
 import { getCachedRomaji, putCachedRomaji } from "./db";
 
@@ -57,10 +58,24 @@ export async function romanizeLines(
 ): Promise<string[] | null> {
   if (!lines.some(hasKana)) return null; // not Japanese → nothing to do
 
+  const src = linesHash(lines);
+  // One model call per song even when every device in the room asks at once —
+  // see lib/singleflight.ts.
+  return singleFlight(`romaji:${videoId}:${opts.access.model}:${src}:${opts.refresh ? 1 : 0}`, () =>
+    romanize(videoId, lines, src, opts)
+  );
+}
+
+async function romanize(
+  videoId: string,
+  lines: string[],
+  src: string,
+  opts: { access: AiAccess; clientId: string; refresh?: boolean }
+): Promise<string[] | null> {
   // `refresh` forces a fresh translation (e.g. after switching to a better
   // model), bypassing the cache read; the new result still overwrites the cache.
   if (!opts.refresh) {
-    const cached = getCachedRomaji(videoId);
+    const cached = getCachedRomaji(videoId, src);
     if (cached && cached.length === lines.length) return cached; // cache hit → free
   }
 
@@ -90,6 +105,6 @@ export async function romanizeLines(
     romaji = raws.flatMap((raw, i) => alignRomaji(raw, batches[i].length));
   }
 
-  putCachedRomaji(videoId, romaji);
+  putCachedRomaji(videoId, romaji, src);
   return romaji;
 }

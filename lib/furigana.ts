@@ -6,13 +6,21 @@
 
 import type { FuriganaSegment } from "@/lib/types";
 import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
-import type { AiAccess } from "./llm";
+import { llmJSON, type AiAccess } from "./llm";
 import { getCachedFurigana, putCachedFurigana } from "./db";
 import { hasKana } from "./romanize";
+import { linesHash, singleFlight } from "./singleflight";
 
 // Lines per model call for long songs — see lib/romanize.ts (CHUNK_LINES). Kept
 // the same so both readings split a long song consistently.
 const CHUNK_LINES = 60;
+
+// How many guard-rejected lines one repair pass will re-ask for. A handful per
+// song is normal; if a reply is broken wholesale, re-asking for all of it would
+// just buy the same failure at twice the latency.
+const MAX_REPAIR_LINES = 24;
+
+const KANJI_RE = /[\u4e00-\u9faf\u3005]/;
 
 const SYSTEM = `You annotate Japanese song lyrics with furigana.
 Input: a JSON array of lyric lines (strings), in order.
@@ -53,6 +61,66 @@ export function coerceFurigana(
   return lines.map((line, i) => coerceLine(arr[i], line));
 }
 
+// Lines the reconstruction guard threw away: they contain kanji, so they should
+// have gained a reading, but came back as the bare original — which renders as
+// plain text with no furigana at all and no error anywhere. Exported for tests.
+export function droppedLineIndexes(
+  furigana: FuriganaSegment[][],
+  lines: string[]
+): number[] {
+  const out: number[] = [];
+  lines.forEach((line, i) => {
+    const segs = furigana[i];
+    if (!segs || !KANJI_RE.test(line)) return; // kana-only lines are plain by design
+    const isBareFallback = segs.length === 1 && segs[0].t === line && !segs[0].r;
+    if (isBareFallback) out.push(i);
+  });
+  return out;
+}
+
+// Re-ask for just those lines. Worth a second try because the model is NOT
+// deterministic even at temperature 0 (the free router spreads requests across
+// different underlying models — measured: three identical requests for one song
+// returned 120, 120 and 124 readings), and a short prompt holding only the hard
+// lines is an easier alignment problem than the whole song.
+//
+// Deliberately best-effort: a line is replaced only if the retry actually earned
+// it a reading, and any failure keeps the plain text we already had, so a repair
+// can never downgrade a result or turn it into an error. It calls llmJSON
+// directly rather than aiJSON because the song's ONE free use was already spent
+// on the first pass — finishing that same song must not cost a second.
+async function repairDroppedLines(
+  furigana: FuriganaSegment[][],
+  lines: string[],
+  access: AiAccess
+): Promise<FuriganaSegment[][]> {
+  const dropped = droppedLineIndexes(furigana, lines).slice(0, MAX_REPAIR_LINES);
+  if (dropped.length === 0) return furigana;
+
+  const subset = dropped.map((i) => lines[i]);
+  let raw: unknown;
+  try {
+    raw = await llmJSON<unknown>({
+      keys: access.keys,
+      model: access.model,
+      fallback: access.fallback,
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: JSON.stringify(subset) },
+      ],
+    });
+  } catch {
+    return furigana; // retry unavailable (rate limit, timeout) → keep plain lines
+  }
+
+  const retried = coerceFurigana(raw, subset);
+  const out = furigana.slice();
+  dropped.forEach((lineIndex, k) => {
+    if (retried[k].some((seg) => seg.r)) out[lineIndex] = retried[k];
+  });
+  return out;
+}
+
 // Furigana for a song's lyric lines (one segment array per line), or null when
 // the song isn't Japanese so callers can skip rendering. Cached in SQLite.
 export async function furiganaLines(
@@ -62,10 +130,25 @@ export async function furiganaLines(
 ): Promise<FuriganaSegment[][] | null> {
   if (!lines.some(hasKana)) return null; // not Japanese → nothing to do
 
+  const src = linesHash(lines);
+  // Collapse the identical requests the TV and every phone fire at once for the
+  // same song (and StrictMode's double-invoke in dev) into ONE model call — the
+  // cache can't, since it isn't written until the first call finishes.
+  return singleFlight(`furigana:${videoId}:${opts.access.model}:${src}:${opts.refresh ? 1 : 0}`, () =>
+    annotate(videoId, lines, src, opts)
+  );
+}
+
+async function annotate(
+  videoId: string,
+  lines: string[],
+  src: string,
+  opts: { access: AiAccess; clientId: string; refresh?: boolean }
+): Promise<FuriganaSegment[][] | null> {
   // `refresh` forces a fresh annotation (e.g. after switching to a better model),
   // bypassing the cache read; the new result still overwrites the cache.
   if (!opts.refresh) {
-    const cached = getCachedFurigana(videoId);
+    const cached = getCachedFurigana(videoId, src);
     if (cached && cached.length === lines.length) return cached; // cache hit → free
   }
 
@@ -95,6 +178,10 @@ export async function furiganaLines(
     furigana = raws.flatMap((raw, i) => coerceFurigana(raw, batches[i]));
   }
 
-  putCachedFurigana(videoId, furigana);
+  // Second chance for the lines the guard dropped, before anything is cached —
+  // otherwise a line that silently lost its reading stays that way for good.
+  furigana = await repairDroppedLines(furigana, lines, opts.access);
+
+  putCachedFurigana(videoId, furigana, src);
   return furigana;
 }

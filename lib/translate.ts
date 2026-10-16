@@ -5,6 +5,7 @@
 // lang) and we SKIP songs already in the chosen language.
 
 import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
+import { linesHash, singleFlight } from "./singleflight";
 import type { AiAccess } from "./llm";
 import { getCachedTranslation, putCachedTranslation } from "./db";
 import { TRANSLATE_LANGS, type TranslateLang } from "./translateLangs";
@@ -66,8 +67,23 @@ export async function translateLines(
 ): Promise<string[] | null> {
   if (alreadyInLang(lines, lang)) return null; // already in target → nothing to show
 
+  const src = linesHash(lines);
+  // One model call per (song, language) even with the whole room watching —
+  // see lib/singleflight.ts.
+  return singleFlight(`trans:${videoId}:${lang}:${opts.access.model}:${src}:${opts.refresh ? 1 : 0}`, () =>
+    translate(videoId, lines, lang, src, opts)
+  );
+}
+
+async function translate(
+  videoId: string,
+  lines: string[],
+  lang: TranslateLang,
+  src: string,
+  opts: { access: AiAccess; clientId: string; refresh?: boolean }
+): Promise<string[] | null> {
   if (!opts.refresh) {
-    const cached = getCachedTranslation(videoId, lang);
+    const cached = getCachedTranslation(videoId, lang, src);
     if (cached && cached.length === lines.length) return cached; // cache hit → free
   }
 
@@ -95,6 +111,6 @@ export async function translateLines(
     out = raws.flatMap((raw, i) => alignTranslation(raw, batches[i].length));
   }
 
-  putCachedTranslation(videoId, lang, out);
+  putCachedTranslation(videoId, lang, out, src);
   return out;
 }

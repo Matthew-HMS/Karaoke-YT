@@ -274,6 +274,21 @@ function addVerColumn(table: string): void {
   }
 }
 
+// Add the `src` column — the hash of the exact lyric lines a cached reading was
+// generated for. Without it the cache was keyed on videoId and validated only by
+// LINE COUNT, so when a video's lyrics changed to a different match with the same
+// number of lines (a wrong-lyrics report, or a different provider winning the
+// lookup), the OLD readings were served and rendered over the NEW words —
+// correct hiragana sitting above text it doesn't belong to. Same ALTER-is-a-no-op
+// pattern as `ver`; existing rows get '' and miss once, then refill.
+function addSrcColumn(table: string): void {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN src TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    // column already exists
+  }
+}
+
 // ---- Romaji cache (Japanese lyrics romanization) ----
 // One row per video: the Hepburn romaji for that song's lyric lines, aligned
 // 1:1 with the lyrics we cached. Generated once via the LLM (see lib/romanize.ts)
@@ -286,23 +301,30 @@ db.exec(`
   );
 `);
 addVerColumn("romaji");
+addSrcColumn("romaji");
 
-const getRomajiStmt = db.prepare(`SELECT data, ver FROM romaji WHERE videoId = ?`);
+const getRomajiStmt = db.prepare(`SELECT data, ver, src FROM romaji WHERE videoId = ?`);
 
-export function getCachedRomaji(videoId: string): string[] | null {
-  const row = getRomajiStmt.get(videoId) as { data: string; ver: number } | undefined;
-  if (!row || row.ver !== READING_CACHE_VERSION) return null; // miss / stale version
+export function getCachedRomaji(videoId: string, src: string): string[] | null {
+  const row = getRomajiStmt.get(videoId) as
+    | { data: string; ver: number; src: string }
+    | undefined;
+  // Miss on a stale pipeline version OR on lyrics that aren't the ones this
+  // romaji was generated from.
+  if (!row || row.ver !== READING_CACHE_VERSION || row.src !== src) return null;
   return JSON.parse(row.data) as string[];
 }
 
 const putRomajiStmt = db.prepare(
-  `INSERT INTO romaji (videoId, data, fetchedAt, ver)
-   VALUES (@videoId, @data, @fetchedAt, @ver)
-   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt, ver = @ver`
+  `INSERT INTO romaji (videoId, data, fetchedAt, ver, src)
+   VALUES (@videoId, @data, @fetchedAt, @ver, @src)
+   ON CONFLICT(videoId) DO UPDATE SET
+     data = @data, fetchedAt = @fetchedAt, ver = @ver, src = @src`
 );
 
-export function putCachedRomaji(videoId: string, lines: string[]): void {
+export function putCachedRomaji(videoId: string, lines: string[], src: string): void {
   putRomajiStmt.run({
+    src,
     videoId,
     data: JSON.stringify(lines),
     fetchedAt: Date.now(),
@@ -321,26 +343,37 @@ db.exec(`
   );
 `);
 addVerColumn("furigana");
+addSrcColumn("furigana");
 
-const getFuriganaStmt = db.prepare(`SELECT data, ver FROM furigana WHERE videoId = ?`);
+const getFuriganaStmt = db.prepare(
+  `SELECT data, ver, src FROM furigana WHERE videoId = ?`
+);
 
-export function getCachedFurigana(videoId: string): FuriganaSegment[][] | null {
-  const row = getFuriganaStmt.get(videoId) as { data: string; ver: number } | undefined;
-  if (!row || row.ver !== READING_CACHE_VERSION) return null; // miss / stale version
+export function getCachedFurigana(
+  videoId: string,
+  src: string
+): FuriganaSegment[][] | null {
+  const row = getFuriganaStmt.get(videoId) as
+    | { data: string; ver: number; src: string }
+    | undefined;
+  if (!row || row.ver !== READING_CACHE_VERSION || row.src !== src) return null;
   return JSON.parse(row.data) as FuriganaSegment[][];
 }
 
 const putFuriganaStmt = db.prepare(
-  `INSERT INTO furigana (videoId, data, fetchedAt, ver)
-   VALUES (@videoId, @data, @fetchedAt, @ver)
-   ON CONFLICT(videoId) DO UPDATE SET data = @data, fetchedAt = @fetchedAt, ver = @ver`
+  `INSERT INTO furigana (videoId, data, fetchedAt, ver, src)
+   VALUES (@videoId, @data, @fetchedAt, @ver, @src)
+   ON CONFLICT(videoId) DO UPDATE SET
+     data = @data, fetchedAt = @fetchedAt, ver = @ver, src = @src`
 );
 
 export function putCachedFurigana(
   videoId: string,
-  lines: FuriganaSegment[][]
+  lines: FuriganaSegment[][],
+  src: string
 ): void {
   putFuriganaStmt.run({
+    src,
     videoId,
     data: JSON.stringify(lines),
     fetchedAt: Date.now(),
@@ -363,30 +396,39 @@ db.exec(`
   );
 `);
 
+addSrcColumn("translation");
+
 const getTranslationStmt = db.prepare(
-  `SELECT data, ver FROM translation WHERE videoId = ? AND lang = ?`
+  `SELECT data, ver, src FROM translation WHERE videoId = ? AND lang = ?`
 );
 
-export function getCachedTranslation(videoId: string, lang: string): string[] | null {
+export function getCachedTranslation(
+  videoId: string,
+  lang: string,
+  src: string
+): string[] | null {
   const row = getTranslationStmt.get(videoId, lang) as
-    | { data: string; ver: number }
+    | { data: string; ver: number; src: string }
     | undefined;
-  if (!row || row.ver !== READING_CACHE_VERSION) return null; // miss / stale version
+  if (!row || row.ver !== READING_CACHE_VERSION || row.src !== src) return null;
   return JSON.parse(row.data) as string[];
 }
 
 const putTranslationStmt = db.prepare(
-  `INSERT INTO translation (videoId, lang, data, fetchedAt, ver)
-   VALUES (@videoId, @lang, @data, @fetchedAt, @ver)
-   ON CONFLICT(videoId, lang) DO UPDATE SET data = @data, fetchedAt = @fetchedAt, ver = @ver`
+  `INSERT INTO translation (videoId, lang, data, fetchedAt, ver, src)
+   VALUES (@videoId, @lang, @data, @fetchedAt, @ver, @src)
+   ON CONFLICT(videoId, lang) DO UPDATE SET
+     data = @data, fetchedAt = @fetchedAt, ver = @ver, src = @src`
 );
 
 export function putCachedTranslation(
   videoId: string,
   lang: string,
-  lines: string[]
+  lines: string[],
+  src: string
 ): void {
   putTranslationStmt.run({
+    src,
     videoId,
     lang,
     data: JSON.stringify(lines),

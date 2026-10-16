@@ -4,7 +4,8 @@ import { aiJSONBatch, chunk } from "@/lib/aiCall";
 import { alignTranslation, alreadyInLang } from "@/lib/translate";
 import { isTranslateLang } from "@/lib/translateLangs";
 import { hasKana, alignRomaji } from "@/lib/romanize";
-import { coerceFurigana } from "@/lib/furigana";
+import { coerceFurigana, droppedLineIndexes } from "@/lib/furigana";
+import { linesHash, singleFlight } from "@/lib/singleflight";
 import {
   DEFAULT_MODEL,
   LlmBadKey,
@@ -279,6 +280,68 @@ describe("resolveAccess (key + quota policy)", () => {
   });
 });
 
+describe("singleFlight (one model call per song, not one per viewer)", () => {
+  it("shares one in-flight run across concurrent callers with the same key", async () => {
+    let runs = 0;
+    const run = async () => {
+      runs++;
+      await new Promise((r) => setTimeout(r, 20));
+      return "result";
+    };
+    // The TV and two phones asking for the same song at the same moment.
+    const all = await Promise.all([
+      singleFlight("song-a", run),
+      singleFlight("song-a", run),
+      singleFlight("song-a", run),
+    ]);
+    expect(all).toEqual(["result", "result", "result"]);
+    expect(runs).toBe(1); // one billed model call, not three
+  });
+
+  it("does not share across different keys, and starts fresh after settling", async () => {
+    let runs = 0;
+    const run = async () => {
+      runs++;
+      return runs;
+    };
+    await Promise.all([singleFlight("a", run), singleFlight("b", run)]);
+    expect(runs).toBe(2); // different songs → separate calls
+    await singleFlight("a", run);
+    expect(runs).toBe(3); // the earlier "a" settled, so this is a new call
+  });
+
+  it("gives every joiner the same rejection, then clears the slot", async () => {
+    let runs = 0;
+    const boom = async () => {
+      runs++;
+      throw new Error("model failed");
+    };
+    const results = await Promise.allSettled([
+      singleFlight("x", boom),
+      singleFlight("x", boom),
+    ]);
+    expect(results.every((r) => r.status === "rejected")).toBe(true);
+    expect(runs).toBe(1);
+    await expect(singleFlight("x", async () => "ok")).resolves.toBe("ok");
+  });
+});
+
+describe("linesHash (bind a cached reading to its exact lyrics)", () => {
+  it("differs when the text differs but the line COUNT matches", () => {
+    // The case the old cache missed: same videoId, same number of lines, but a
+    // different lyrics match — it served the old readings over the new words.
+    const a = ["君の声が聞こえる", "星が降る街で"];
+    const b = ["君の声が聞こえた", "星が降る街へ"];
+    expect(a.length).toBe(b.length);
+    expect(linesHash(a)).not.toBe(linesHash(b));
+  });
+
+  it("is stable for identical input", () => {
+    const lines = ["何十回の夜を越えて", "明日を信じて"];
+    expect(linesHash(lines)).toBe(linesHash([...lines]));
+  });
+});
+
 describe("coerceFurigana", () => {
   it("keeps valid segments that reconstruct the line exactly", () => {
     const raw = [
@@ -311,6 +374,33 @@ describe("coerceFurigana", () => {
       [{ t: "い" }],
       [{ t: "う" }],
     ]);
+  });
+});
+
+describe("droppedLineIndexes (lines the guard silently blanked)", () => {
+  const annotated = [{ t: "何十回", r: "なんじゅっかい" }, { t: "の夜" }];
+
+  it("finds a kanji line returned as the bare original", () => {
+    // The guard rejected the model's segments, so this line renders with no
+    // furigana at all — a 200 response that quietly lost its reading.
+    const lines = ["今日は記念日", "カラオケ"];
+    const furi = [[{ t: "今日は記念日" }], [{ t: "カラオケ" }]];
+    expect(droppedLineIndexes(furi, lines)).toEqual([0]);
+  });
+
+  it("ignores kana-only lines — plain is correct for them", () => {
+    const lines = ["カラオケ", "ありがとう"];
+    const furi = [[{ t: "カラオケ" }], [{ t: "ありがとう" }]];
+    expect(droppedLineIndexes(furi, lines)).toEqual([]);
+  });
+
+  it("ignores lines that did get a reading", () => {
+    expect(droppedLineIndexes([annotated], ["何十回の夜"])).toEqual([]);
+  });
+
+  it("treats 々 as kanji and survives a short furigana array", () => {
+    expect(droppedLineIndexes([[{ t: "日々" }]], ["日々"])).toEqual([0]);
+    expect(droppedLineIndexes([], ["今日"])).toEqual([]); // no row → nothing to repair
   });
 });
 

@@ -475,7 +475,19 @@ export function LyricsPanel({
                 className={`pt-1.5 leading-snug transition-colors duration-200 ${
                   rj ? "pb-0" : "pb-1.5"
                 } ${
-                  furi ? "[&_rt]:text-[0.5em] [&_rt]:font-normal [&_rt]:text-fuchsia-200/90 " : ""
+                  furi
+                    ? // Keep each reading as ONE unit centred over its own word.
+                      // CSS defaults ruby-align to `space-around`, which spreads
+                      // the kana evenly across the base — きょう over 今日 renders
+                      // as き…ょ…う, each kana appearing to belong to a different
+                      // character (and the last one drifting onto the next word).
+                      // `inline-block` shrink-wraps the group so the annotation can
+                      // never overhang its neighbours, which is the part Chrome
+                      // gets wrong without it; ruby-align centres it in engines
+                      // that support the property.
+                      "[&_ruby]:inline-block [&_ruby]:text-center [&_ruby]:[ruby-align:center] " +
+                      "[&_rt]:text-[0.5em] [&_rt]:font-normal [&_rt]:text-fuchsia-200/90 "
+                    : ""
                 }${
                   isActive
                     ? "text-2xl font-bold text-white"

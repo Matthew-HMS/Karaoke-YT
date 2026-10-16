@@ -122,7 +122,11 @@ instantly **seek to any part** of a song.
   - 🇯🇵 **Japanese reading aid** — a **⚙ Settings** mode adds either **furigana**
     (hiragana **above each kanji**, via `<ruby>`) or Hepburn **romaji** under each
     line (kana-detected; Chinese is left alone). Cached per-video in SQLite; the
-    furigana output is reconstruction-checked so it can never alter the lyrics.
+    furigana output is reconstruction-checked so it can never alter the lyrics —
+    and because that check throws away a whole line's readings when the model
+    slips a single character, rejected lines get one short retry pass before the
+    result is cached (same song, same free use; a line is only replaced if the
+    retry actually earns it a reading).
   - 🌏 **Lyrics translation** — a **⚙ Settings** language dropdown (English, 中文,
     日本語, 한국어, Español, …) translates the lyrics line-by-line under each line
     (meaning, not pronunciation). Skipped when the song is already in that language;
@@ -144,6 +148,12 @@ instantly **seek to any part** of a song.
     private `AI_BYPASS_SECRET` word to use the server key with no limit.
     Quota exhaustion surfaces as a friendly "try again / add your key" hint;
     without any key, AI affordances are hidden and the rest works unchanged.
+  - 🔁 **One call per song, not per viewer** — the TV and every phone render the
+    lyrics at once, so they all request the same reading simultaneously and the
+    cache (written only when the first call *finishes*) can't dedupe them.
+    `lib/singleflight.ts` collapses concurrent identical work into one model call;
+    each cached reading also stores a hash of the exact lyric lines it was built
+    from, so a changed lyrics match can never render old readings over new words.
   - 💳 **Paid fallback** — free-tier limits attach to the **free model id**, not to
     your billing status, so a credited key calling `orcarouter/free` gets the same
     429 as a brand-new one. The live tier table is
