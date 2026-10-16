@@ -480,12 +480,12 @@ export function LyricsPanel({
                       // CSS defaults ruby-align to `space-around`, which spreads
                       // the kana evenly across the base — きょう over 今日 renders
                       // as き…ょ…う, each kana appearing to belong to a different
-                      // character (and the last one drifting onto the next word).
-                      // `inline-block` shrink-wraps the group so the annotation can
-                      // never overhang its neighbours, which is the part Chrome
-                      // gets wrong without it; ruby-align centres it in engines
-                      // that support the property.
-                      "[&_ruby]:inline-block [&_ruby]:text-center [&_ruby]:[ruby-align:center] " +
+                      // character. `ruby-align` only changes how the annotation is
+                      // distributed, never how the base is sized, so it is safe.
+                      // Do NOT add `display: inline-block` here: it shrink-wraps
+                      // each group to its annotation's width and blows wide gaps
+                      // between the base characters — it wrecks the line.
+                      "[&_ruby]:[ruby-align:center] " +
                       "[&_rt]:text-[0.5em] [&_rt]:font-normal [&_rt]:text-fuchsia-200/90 "
                     : ""
                 }${
