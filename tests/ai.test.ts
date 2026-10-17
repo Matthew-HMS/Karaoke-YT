@@ -9,6 +9,7 @@ import { linesHash, singleFlight } from "@/lib/singleflight";
 import {
   DEFAULT_MODEL,
   LlmBadKey,
+  LlmBadReply,
   LlmError,
   LlmFreeExhausted,
   LlmNoCredits,
@@ -76,6 +77,101 @@ describe("aiJSONBatch (chunked song = one quota unit)", () => {
     });
     expect(out).toEqual([["r0"], ["r1"]]);
     expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it("yields null for a failed chunk and keeps the ones that worked", async () => {
+    // One bad reply used to sink the whole song, discarding the chunks that HAD
+    // arrived — why a long song could fail outright while short ones were fine.
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call++;
+      const content = call === 1 ? '[["ok"]]' : '[[{"t":"x"'; // 2nd is truncated
+      return {
+        status: 200,
+        ok: true,
+        json: async (): Promise<unknown> => ({ choices: [{ message: { content } }] }),
+        text: async (): Promise<string> => "",
+        headers: new Headers(),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await aiJSONBatch<unknown>({
+      access: { keys: ["sk-x"], mode: "user", model: "m" },
+      clientId: "c",
+      batches: [
+        [{ role: "user", content: "a" }],
+        [{ role: "user", content: "b" }],
+      ],
+    });
+    expect(out[0]).toEqual([["ok"]]); // good chunk survives
+    expect(out[1]).toBeNull(); // bad chunk degrades to a hole
+  });
+
+  it("throws when NO chunk could be fetched", async () => {
+    // Nothing to show at all → the caller must surface an error, not an empty
+    // reading, and no quota is spent.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        status: 200,
+        ok: true,
+        json: async (): Promise<unknown> => ({ choices: [{ message: { content: "not json" } }] }),
+        text: async (): Promise<string> => "",
+        headers: new Headers(),
+      }))
+    );
+    await expect(
+      aiJSONBatch<unknown>({
+        access: { keys: ["sk-x"], mode: "user", model: "m" },
+        clientId: "c",
+        batches: [[{ role: "user", content: "a" }]],
+      })
+    ).rejects.toBeInstanceOf(LlmBadReply);
+  });
+});
+
+describe("llmJSON — unreadable replies", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const reply = (content: string) => ({
+    status: 200,
+    ok: true,
+    json: async (): Promise<unknown> => ({ choices: [{ message: { content } }] }),
+    text: async (): Promise<string> => "",
+    headers: new Headers(),
+  });
+
+  it("re-asks when the JSON is truncated, and uses the retry that parses", async () => {
+    // Measured against the real gateway: a truncated array arrives with
+    // finish_reason "stop", and the SAME prompt parses on the next attempt.
+    let call = 0;
+    const fetchMock = vi.fn(async () => reply(++call === 1 ? '[{"t":"cut' : '["fine"]'));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      llmJSON<string[]>({ keys: ["sk-x"], messages: [{ role: "user", content: "hi" }] })
+    ).resolves.toEqual(["fine"]);
+    expect(fetchMock.mock.calls.length).toBe(2); // one retry, no backoff needed
+  });
+
+  it("throws LlmBadReply (not a rate limit) when every attempt is junk", async () => {
+    const fetchMock = vi.fn(async () => reply("Sorry, I cannot do that."));
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await llmJSON({
+      keys: ["sk-x"],
+      messages: [{ role: "user", content: "hi" }],
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmBadReply);
+    expect(err).not.toBeInstanceOf(LlmRateLimited);
+    expect(fetchMock.mock.calls.length).toBe(3); // initial + the two retry rounds
+  });
+
+  it("treats an empty reply as unreadable rather than fatal", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async () => reply(++call === 1 ? "" : '["recovered"]'));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      llmJSON<string[]>({ keys: ["sk-x"], messages: [{ role: "user", content: "hi" }] })
+    ).resolves.toEqual(["recovered"]);
   });
 });
 

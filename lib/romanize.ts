@@ -85,12 +85,14 @@ async function romanize(
   ];
 
   let romaji: string[];
+  let missingChunk = false; // a whole chunk failed → show it, don't cache it
   if (lines.length <= CHUNK_LINES) {
     // Short song → one call (the common case).
     const raw = await aiJSON<unknown>({
       access: opts.access,
       clientId: opts.clientId,
       messages: prompt(lines),
+      expect: lines.length,
     });
     romaji = alignRomaji(raw, lines.length);
   } else {
@@ -101,10 +103,13 @@ async function romanize(
       access: opts.access,
       clientId: opts.clientId,
       batches: batches.map(prompt),
+      expect: batches.map((b) => b.length),
     });
+    missingChunk = raws.some((raw) => raw === null);
     romaji = raws.flatMap((raw, i) => alignRomaji(raw, batches[i].length));
   }
 
-  putCachedRomaji(videoId, romaji, src);
+  // See lib/furigana.ts: a reading with a blank range must not be frozen in.
+  if (!missingChunk) putCachedRomaji(videoId, romaji, src);
   return romaji;
 }

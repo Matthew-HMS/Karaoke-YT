@@ -19,6 +19,13 @@ const DB_PATH =
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
+// Several PROCESSES open this file at once: `next build` collects page data with
+// a worker pool, and every worker imports this module and runs the migrations
+// below against the same database. WAL allows concurrent readers but only one
+// writer, so the losers must wait rather than fail. This is already
+// better-sqlite3's default; it's stated explicitly because the migrations
+// depend on it and a silent change to that default would be hard to trace.
+db.pragma("busy_timeout = 5000");
 
 // Favorites are scoped to a user (Google account id). Primary key is the
 // (userId, videoId) pair so two users can each star the same song.
@@ -262,32 +269,38 @@ export function clearRejectedLyrics(videoId: string): void {
 // default to 0, so they're invalidated the first time a newer version reads them.
 const READING_CACHE_VERSION = 1;
 
-// Add the `ver` column to a reading-cache table that predates it. The CREATE
-// above doesn't include it (so an existing table keeps its rows); this ALTER
-// adds it with DEFAULT 0 and is a no-op (duplicate-column error, ignored) once
-// present. Must run before the prepared statements below reference `ver`.
-function addVerColumn(table: string): void {
+function hasColumn(table: string, column: string): boolean {
+  const cols = db.pragma(`table_info(${table})`) as { name: string }[];
+  return cols.some((c) => c.name === column);
+}
+
+// Add a column that an older database predates: the CREATE above omits it so an
+// existing table keeps its rows, and this ALTER fills the gap before the
+// prepared statements below reference it.
+//
+// It deliberately does NOT swallow every error. This used to be a bare
+// `catch {}` standing in for "column already exists", which also forgave real
+// failures: the column would never be added, and the confusing part is that the
+// error then surfaced somewhere else entirely — the next db.prepare() dying with
+// "no such column". So: check first, and forgive a failed ALTER only when the
+// column is genuinely present (another process added it). Anything else throws
+// here, where the cause is still visible.
+function ensureColumn(table: string, column: string, decl: string): void {
+  if (hasColumn(table, column)) return;
   try {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ver INTEGER NOT NULL DEFAULT 0`);
-  } catch {
-    // column already exists
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  } catch (err) {
+    if (!hasColumn(table, column)) throw err;
   }
 }
 
-// Add the `src` column — the hash of the exact lyric lines a cached reading was
-// generated for. Without it the cache was keyed on videoId and validated only by
-// LINE COUNT, so when a video's lyrics changed to a different match with the same
-// number of lines (a wrong-lyrics report, or a different provider winning the
-// lookup), the OLD readings were served and rendered over the NEW words —
-// correct hiragana sitting above text it doesn't belong to. Same ALTER-is-a-no-op
-// pattern as `ver`; existing rows get '' and miss once, then refill.
-function addSrcColumn(table: string): void {
-  try {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN src TEXT NOT NULL DEFAULT ''`);
-  } catch {
-    // column already exists
-  }
-}
+const VER_COLUMN = "INTEGER NOT NULL DEFAULT 0";
+// `src` holds the hash of the exact lyric lines a cached reading was generated
+// for. Without it the cache was keyed on videoId and validated only by LINE
+// COUNT, so a video whose lyrics changed to a different match with the same
+// number of lines served the OLD readings over the NEW words. Existing rows get
+// '' and miss once, then refill.
+const SRC_COLUMN = "TEXT NOT NULL DEFAULT ''";
 
 // ---- Romaji cache (Japanese lyrics romanization) ----
 // One row per video: the Hepburn romaji for that song's lyric lines, aligned
@@ -300,8 +313,8 @@ db.exec(`
     fetchedAt INTEGER NOT NULL
   );
 `);
-addVerColumn("romaji");
-addSrcColumn("romaji");
+ensureColumn("romaji", "ver", VER_COLUMN);
+ensureColumn("romaji", "src", SRC_COLUMN);
 
 const getRomajiStmt = db.prepare(`SELECT data, ver, src FROM romaji WHERE videoId = ?`);
 
@@ -342,8 +355,8 @@ db.exec(`
     fetchedAt INTEGER NOT NULL
   );
 `);
-addVerColumn("furigana");
-addSrcColumn("furigana");
+ensureColumn("furigana", "ver", VER_COLUMN);
+ensureColumn("furigana", "src", SRC_COLUMN);
 
 const getFuriganaStmt = db.prepare(
   `SELECT data, ver, src FROM furigana WHERE videoId = ?`
@@ -396,7 +409,7 @@ db.exec(`
   );
 `);
 
-addSrcColumn("translation");
+ensureColumn("translation", "src", SRC_COLUMN);
 
 const getTranslationStmt = db.prepare(
   `SELECT data, ver, src FROM translation WHERE videoId = ? AND lang = ?`

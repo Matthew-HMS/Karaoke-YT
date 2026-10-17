@@ -5,6 +5,7 @@
 //   LlmNoCredits    → 402 { code: "no_credits" }
 //   LlmFreeExhausted→ 402 { code: "free_exhausted" }
 //   LlmRateLimited  → 429 { code: "rate_limited", retryAfter? }
+//   LlmBadReply     → 502 { code: "bad_reply" }
 //   LlmTimeout      → 504 { code: "slow_model" }
 //   anything else   → 502 { error: <message> }
 // `extra` carries the route's empty payload (e.g. { results: [] }) so the shape
@@ -17,7 +18,14 @@
 // it), so a guest never sees the owner's billing detail.
 
 import { NextResponse } from "next/server";
-import { LlmBadKey, LlmFreeExhausted, LlmNoCredits, LlmRateLimited, LlmTimeout } from "./llm";
+import {
+  LlmBadKey,
+  LlmBadReply,
+  LlmFreeExhausted,
+  LlmNoCredits,
+  LlmRateLimited,
+  LlmTimeout,
+} from "./llm";
 import { AiQuotaExceeded } from "./aiCall";
 
 export function aiErrorResponse(
@@ -62,6 +70,12 @@ export function aiErrorResponse(
         ...extra,
       },
       { status: 429 }
+    );
+  }
+  if (err instanceof LlmBadReply) {
+    return NextResponse.json(
+      { error: "bad_reply", code: "bad_reply", ...extra },
+      { status: 502 }
     );
   }
   if (err instanceof LlmTimeout) {

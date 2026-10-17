@@ -83,6 +83,22 @@ export class LlmTimeout extends LlmError {
   }
 }
 
+// Thrown when every attempt came back as a reply we couldn't read as JSON.
+// In practice that means a TRUNCATED array: the content stops mid-structure
+// while the gateway still reports finish_reason "stop", so nothing upstream
+// flags it. Measured on a 60-line furigana chunk, the parse error landed on the
+// content's very last character every time. It is not a length cap — the same
+// prompt that failed at 2081 completion tokens parsed fine at 912 on the next
+// try, and a 20-line chunk failed at 532 — it is the free router handing the
+// request to a different underlying model each time. Hence: re-ask before
+// giving up, and only raise this once the retries are spent.
+export class LlmBadReply extends LlmError {
+  constructor(message = "OrcaRouter reply was not usable JSON (likely truncated)") {
+    super(message);
+    this.name = "LlmBadReply";
+  }
+}
+
 // Thrown when the FREE allowance is used up across all keys (402
 // free_quota_exhausted — the per-key daily cap). Distinct from a transient 429:
 // retrying won't help today, so routes tell the user it's used up for now.
@@ -283,7 +299,8 @@ async function runPool<T>(
   keys: string[],
   model: string,
   messages: Message[],
-  signal: AbortSignal
+  signal: AbortSignal,
+  expect?: number
 ): Promise<T> {
   if (keys.length === 0) throw new Error("no OrcaRouter key available");
 
@@ -303,10 +320,16 @@ async function runPool<T>(
   // is worth anything and is handed to the UI so it can name a real wait.
   let retryAfter: number | undefined;
 
+  // Best SHORT array seen (see `expect` below). Kept so that if every attempt
+  // comes up short we still hand back the fullest one instead of nothing.
+  let best: T | undefined;
+  let bestLength = -1;
+
   for (let round = 0; ; round++) {
     // Per-round tally of WHY no key served us, so we can decide whether to retry.
     let sawRateLimit = false; // 429 — transient, worth a backoff retry
     let sawFreeExhausted = false; // 402 free_quota_exhausted — daily cap, won't recover now
+    let sawBadReply = false; // served, but the JSON was unreadable — re-ask at once
 
     for (const key of keys) {
       let res: Response;
@@ -358,8 +381,34 @@ async function runPool<T>(
         choices?: { message?: { content?: string } }[];
       };
       const content = data.choices?.[0]?.message?.content;
-      if (!content) throw new Error("empty LLM reply");
-      return extractJson<T>(content);
+      if (!content) {
+        sawBadReply = true;
+        continue; // empty reply → ask again rather than failing the song
+      }
+      let parsed: T;
+      try {
+        parsed = extractJson<T>(content);
+      } catch {
+        // Served, but unreadable — see LlmBadReply. Re-asking usually works.
+        sawBadReply = true;
+        continue;
+      }
+
+      // A reply can PARSE and still be incomplete, which is the quieter half of
+      // the same problem: when the array is truncated, extractJson's "first [
+      // to last ]" span happily yields the elements that survived. For our
+      // per-line tasks a short array silently blanks every line past its end —
+      // the reading just stops mid-song with no error anywhere. So treat it as
+      // unusable and ask again, keeping the longest one in case they all are.
+      if (expect !== undefined && Array.isArray(parsed) && parsed.length < expect) {
+        if (parsed.length > bestLength) {
+          bestLength = parsed.length;
+          best = parsed;
+        }
+        sawBadReply = true;
+        continue;
+      }
+      return parsed;
     }
 
     // No key served us this round. A briefly rate-limited key might recover, so
@@ -367,12 +416,23 @@ async function runPool<T>(
     // could actually clear in that time; against a multi-hour free-pool cooldown
     // the rounds just burn the caller's budget and then fail anyway. If the ONLY
     // problem is daily-exhausted keys, retrying is pointless either way.
+    // An unreadable reply gets an IMMEDIATE re-ask: nothing is throttling us, so
+    // a backoff would only burn the request's budget. Rate limiting is the one
+    // thing worth waiting on.
+    if (sawBadReply && !sawRateLimit && round < RETRY_DELAYS_MS.length) continue;
+
     const worthRetrying = retryAfter === undefined || retryAfter <= MAX_WORTH_RETRYING_SEC;
     if (sawRateLimit && worthRetrying && round < RETRY_DELAYS_MS.length) {
       await sleep(RETRY_DELAYS_MS[round]);
       continue;
     }
     if (sawFreeExhausted && !sawRateLimit) throw new LlmFreeExhausted();
+    // Every attempt came up short → settle for the fullest one. Partial lines
+    // beat none, and furigana repairs its leftover gaps line by line.
+    if (best !== undefined) return best;
+    // Only call it a rate limit if that is actually what we saw; a pool that
+    // kept answering with junk is a different failure and must say so.
+    if (sawBadReply && !sawRateLimit) throw new LlmBadReply();
     throw new LlmRateLimited(undefined, retryAfter);
   }
 }
@@ -391,21 +451,25 @@ export async function llmJSON<T>(opts: {
   model?: string;
   fallback?: { keys: string[]; model: string; own?: boolean };
   signal?: AbortSignal;
+  // How many array elements the caller needs back (one per lyric line). Set it
+  // for per-line tasks so a truncated reply is retried instead of silently
+  // blanking the rest of the song.
+  expect?: number;
 }): Promise<T> {
-  const { messages, keys, model = MODEL, fallback } = opts;
+  const { messages, keys, model = MODEL, fallback, expect } = opts;
   // A caller-supplied signal (or the default timeout) bounds the TOTAL time —
   // the primary attempt and any paid fallback share this one budget.
   const signal = opts.signal ?? AbortSignal.timeout(TIMEOUT_MS);
 
   try {
-    return await runPool<T>(keys, model, messages, signal);
+    return await runPool<T>(keys, model, messages, signal, expect);
   } catch (primary) {
     // Fall back to the paid pool only when the FREE pool itself couldn't serve.
     const freeCouldNotServe =
       primary instanceof LlmFreeExhausted || primary instanceof LlmRateLimited;
     if (fallback && freeCouldNotServe) {
       try {
-        return await runPool<T>(fallback.keys, fallback.model, messages, signal);
+        return await runPool<T>(fallback.keys, fallback.model, messages, signal, expect);
       } catch (fb) {
         // The fallback failed too. When it spent the CALLER'S own key, its failure
         // is theirs to see and act on ("add credits"), so surface it directly.

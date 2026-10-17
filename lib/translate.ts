@@ -94,11 +94,13 @@ async function translate(
   ];
 
   let out: string[];
+  let missingChunk = false; // a whole chunk failed → show it, don't cache it
   if (lines.length <= CHUNK_LINES) {
     const raw = await aiJSON<unknown>({
       access: opts.access,
       clientId: opts.clientId,
       messages: prompt(lines),
+      expect: lines.length,
     });
     out = alignTranslation(raw, lines.length);
   } else {
@@ -107,10 +109,13 @@ async function translate(
       access: opts.access,
       clientId: opts.clientId,
       batches: batches.map(prompt),
+      expect: batches.map((b) => b.length),
     });
+    missingChunk = raws.some((raw) => raw === null);
     out = raws.flatMap((raw, i) => alignTranslation(raw, batches[i].length));
   }
 
-  putCachedTranslation(videoId, lang, out, src);
+  // See lib/furigana.ts: a translation with a blank range must not be frozen in.
+  if (!missingChunk) putCachedTranslation(videoId, lang, out, src);
   return out;
 }

@@ -122,6 +122,12 @@ instantly **seek to any part** of a song.
   - 🇯🇵 **Japanese reading aid** — a **⚙ Settings** mode adds either **furigana**
     (hiragana **above each kanji**, via `<ruby>`) or Hepburn **romaji** under each
     line (kana-detected; Chinese is left alone). Cached per-video in SQLite; the
+    Long songs are split into 30-line calls (half romaji's 60: the furigana reply
+    is much heavier, and at 60 the model quietly returns a well-formed array
+    covering only ~half the chunk). A reply that won't parse, or that comes back
+    short, is re-asked; a chunk that still fails leaves its range plain instead
+    of sinking the whole song, and such a partial result is deliberately not
+    cached so the next visit can heal it. The
     furigana output is reconstruction-checked so it can never alter the lyrics —
     and because that check throws away a whole line's readings when the model
     slips a single character, rejected lines get one short retry pass before the

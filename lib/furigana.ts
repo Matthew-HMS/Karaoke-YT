@@ -11,9 +11,15 @@ import { getCachedFurigana, putCachedFurigana } from "./db";
 import { hasKana } from "./romanize";
 import { linesHash, singleFlight } from "./singleflight";
 
-// Lines per model call for long songs — see lib/romanize.ts (CHUNK_LINES). Kept
-// the same so both readings split a long song consistently.
-const CHUNK_LINES = 60;
+// Lines per model call for long songs. HALF of romaji's 60 (lib/romanize.ts) on
+// purpose: furigana's reply is by far the heaviest — a segment object per kanji
+// run rather than one string per line — and at 60 the model simply stops early,
+// returning a complete, well-formed array of only ~30 entries. Nothing errors,
+// so the rest of the chunk silently renders with no readings. Measured on a
+// 74-line song: 60-line chunks came back 29-31/60 every attempt (retrying does
+// not help — it is not truncation), while 40 and 30 returned the full count on
+// every run. 30 leaves headroom.
+const CHUNK_LINES = 30;
 
 // How many guard-rejected lines one repair pass will re-ask for. A handful per
 // song is normal; if a reply is broken wholesale, re-asking for all of it would
@@ -108,6 +114,7 @@ async function repairDroppedLines(
         { role: "system", content: SYSTEM },
         { role: "user", content: JSON.stringify(subset) },
       ],
+      expect: subset.length,
     });
   } catch {
     return furigana; // retry unavailable (rate limit, timeout) → keep plain lines
@@ -158,12 +165,16 @@ async function annotate(
   ];
 
   let furigana: FuriganaSegment[][];
+  // True when a whole chunk came back unusable, so this reading has a blank
+  // range through it. Such a result is worth SHOWING but not worth caching.
+  let missingChunk = false;
   if (lines.length <= CHUNK_LINES) {
     // Short song → one call (the common case).
     const raw = await aiJSON<unknown>({
       access: opts.access,
       clientId: opts.clientId,
       messages: prompt(lines),
+      expect: lines.length,
     });
     furigana = coerceFurigana(raw, lines);
   } else {
@@ -174,7 +185,11 @@ async function annotate(
       access: opts.access,
       clientId: opts.clientId,
       batches: batches.map(prompt),
+      expect: batches.map((b) => b.length),
     });
+    missingChunk = raws.some((raw) => raw === null);
+    // A null chunk coerces to plain lines for its range, so the chunks that did
+    // arrive still reach the singer.
     furigana = raws.flatMap((raw, i) => coerceFurigana(raw, batches[i]));
   }
 
@@ -182,6 +197,10 @@ async function annotate(
   // otherwise a line that silently lost its reading stays that way for good.
   furigana = await repairDroppedLines(furigana, lines, opts.access);
 
-  putCachedFurigana(videoId, furigana, src);
+  // Cache a complete reading only. Writing one with a whole chunk missing would
+  // freeze that gap in permanently — every later visit would serve the holes
+  // from SQLite and never try again. Skipping the write costs one more call on
+  // the next visit and lets the song heal itself.
+  if (!missingChunk) putCachedFurigana(videoId, furigana, src);
   return furigana;
 }

@@ -33,8 +33,10 @@ export async function aiJSON<T>(opts: {
   access: AiAccess;
   clientId: string;
   messages: Message[];
+  // Lines the reply must cover; a shorter array is retried (see lib/llm.ts).
+  expect?: number;
 }): Promise<T> {
-  const { access, clientId, messages } = opts;
+  const { access, clientId, messages, expect } = opts;
 
   // Enforce the free quota up front (so a blocked call never hits the network).
   if (access.mode === "free" && aiUsageCount(clientId) >= AI_FREE_LIMIT) {
@@ -46,6 +48,7 @@ export async function aiJSON<T>(opts: {
     model: access.model,
     fallback: access.fallback,
     messages,
+    expect,
   });
 
   // Only a successful call spends a free use.
@@ -66,30 +69,53 @@ export function chunk<T>(arr: T[], size: number): T[][] {
 // off). The free quota is checked once up front and bumped once on overall
 // success, so a long song still costs the caller exactly ONE free use — even
 // though it's several model calls. Calls run sequentially (gentler on the free
-// rate limit); if any chunk fails the whole thing throws and no use is spent.
+// rate limit).
+//
+// A failing chunk yields `null` rather than sinking the batch. It used to throw,
+// which meant one bad reply threw away the chunks that HAD succeeded and the
+// whole song lost its reading — the reason a long song could fail while short
+// ones (a single chunk, so a single chance to fail) were fine. Callers coerce a
+// null chunk into plain lines for that range. If EVERY chunk fails there is
+// nothing to show, so the last error is raised and no quota is spent.
 export async function aiJSONBatch<T>(opts: {
   access: AiAccess;
   clientId: string;
   batches: Message[][];
-}): Promise<T[]> {
-  const { access, clientId, batches } = opts;
+  // Lines each batch must cover, aligned with `batches`.
+  expect?: number[];
+}): Promise<(T | null)[]> {
+  const { access, clientId, batches, expect } = opts;
 
   if (access.mode === "free" && aiUsageCount(clientId) >= AI_FREE_LIMIT) {
     throw new AiQuotaExceeded();
   }
 
-  const out: T[] = [];
-  for (const messages of batches) {
-    out.push(
-      await llmJSON<T>({
-        keys: access.keys,
-        model: access.model,
-        fallback: access.fallback,
-        messages,
-      })
-    );
+  const out: (T | null)[] = [];
+  let served = 0;
+  let lastError: unknown;
+  for (const [i, messages] of batches.entries()) {
+    try {
+      out.push(
+        await llmJSON<T>({
+          keys: access.keys,
+          model: access.model,
+          fallback: access.fallback,
+          messages,
+          expect: expect?.[i],
+        })
+      );
+      served++;
+    } catch (err) {
+      // Quota and key problems apply to every chunk — pressing on would just
+      // repeat the same failure and, for a quota error, spend uses we don't
+      // have. Only a per-reply failure is worth continuing past.
+      if (err instanceof AiQuotaExceeded) throw err;
+      lastError = err;
+      out.push(null);
+    }
   }
 
+  if (served === 0) throw lastError ?? new Error("no chunk could be fetched");
   if (access.mode === "free") bumpAiUsage(clientId);
   return out;
 }
