@@ -94,7 +94,6 @@ async function translate(
   ];
 
   let out: string[];
-  let missingChunk = false; // a whole chunk failed → show it, don't cache it
   if (lines.length <= CHUNK_LINES) {
     const raw = await aiJSON<unknown>({
       access: opts.access,
@@ -111,11 +110,13 @@ async function translate(
       batches: batches.map(prompt),
       expect: batches.map((b) => b.length),
     });
-    missingChunk = raws.some((raw) => raw === null);
     out = raws.flatMap((raw, i) => alignTranslation(raw, batches[i].length));
   }
 
-  // See lib/furigana.ts: a translation with a blank range must not be frozen in.
-  if (!missingChunk) putCachedTranslation(videoId, lang, out, src);
+  // Cached even if a chunk came back empty. Not caching it meant the whole song
+  // re-ran on every visit, which costs far more than the blank range is worth;
+  // unlike furigana there is no per-line repair here, so ↻ Re-translate (which
+  // bypasses the cache) is the way to re-roll a bad one.
+  putCachedTranslation(videoId, lang, out, src);
   return out;
 }

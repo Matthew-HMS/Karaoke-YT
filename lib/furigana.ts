@@ -28,6 +28,12 @@ const MAX_REPAIR_LINES = 24;
 
 const KANJI_RE = /[\u4e00-\u9faf\u3005]/;
 
+// How many times a song's reading may be generated or upgraded before we settle
+// for what we have. A few lines occasionally refuse to come back annotated no
+// matter how often they're re-asked; without this, serving the cached-but-
+// incomplete reading would fire a repair call on every single visit forever.
+const MAX_ATTEMPTS = 3;
+
 const SYSTEM = `You annotate Japanese song lyrics with furigana.
 Input: a JSON array of lyric lines (strings), in order.
 For each line output an array of segments that EXACTLY reconstruct the line in order:
@@ -156,7 +162,18 @@ async function annotate(
   // bypassing the cache read; the new result still overwrites the cache.
   if (!opts.refresh) {
     const cached = getCachedFurigana(videoId, src);
-    if (cached && cached.length === lines.length) return cached; // cache hit → free
+    if (cached && cached.segments.length === lines.length) {
+      // A cached reading is served immediately even when it still has gaps —
+      // re-running the whole song on every visit is what used to burn requests
+      // on a song that never completed. If gaps remain and we haven't used up
+      // our attempts, upgrade just those lines (a short call) and keep the
+      // better result, so the song converges instead of being stuck or costly.
+      const gaps = droppedLineIndexes(cached.segments, lines).length;
+      if (gaps === 0 || cached.tries >= MAX_ATTEMPTS) return cached.segments;
+      const upgraded = await repairDroppedLines(cached.segments, lines, opts.access);
+      putCachedFurigana(videoId, upgraded, src, cached.tries + 1);
+      return upgraded;
+    }
   }
 
   const prompt = (batch: string[]) => [
@@ -197,10 +214,12 @@ async function annotate(
   // otherwise a line that silently lost its reading stays that way for good.
   furigana = await repairDroppedLines(furigana, lines, opts.access);
 
-  // Cache a complete reading only. Writing one with a whole chunk missing would
-  // freeze that gap in permanently — every later visit would serve the holes
-  // from SQLite and never try again. Skipping the write costs one more call on
-  // the next visit and lets the song heal itself.
-  if (!missingChunk) putCachedFurigana(videoId, furigana, src);
+  // ALWAYS cache, gaps and all. Skipping the write for an incomplete reading
+  // meant a song that couldn't finish re-ran its whole pipeline on every single
+  // visit — the "it calls the API again every time I switch tabs" problem. The
+  // gaps are not frozen in: the cache-hit path above upgrades them on a later
+  // visit, bounded by MAX_ATTEMPTS. A chunk that went missing entirely starts
+  // the count higher, since it has more ground to make up than a stray line.
+  putCachedFurigana(videoId, furigana, src, missingChunk ? 1 : MAX_ATTEMPTS - 1);
   return furigana;
 }

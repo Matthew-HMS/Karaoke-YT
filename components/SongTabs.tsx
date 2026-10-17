@@ -976,6 +976,18 @@ export function PlayerTab({
 
   // Sub-tab below the now-playing card; remembered across re-mounts.
   const [sub, setSub] = useState<SubTab>(lastSub);
+  // Which song the lyrics panel is currently alive for. The panel is kept
+  // mounted (just hidden) while you're on another sub-tab, so its lyrics and
+  // readings survive the switch — but ONLY for a song you actually opened it
+  // on. Without that condition, every song that started while you were on
+  // another tab would silently fetch its own furigana and translation for
+  // nobody to read, which is real money and a real dent in the daily free
+  // request allowance.
+  const [lyricsSong, setLyricsSong] = useState<string | null>(null);
+  useEffect(() => {
+    if (sub === "lyrics" && nowPlaying) setLyricsSong(nowPlaying.videoId);
+  }, [sub, nowPlaying]);
+  const lyricsAlive = !!nowPlaying && lyricsSong === nowPlaying.videoId;
   useEffect(() => {
     lastSub = sub;
   }, [sub]);
@@ -1075,18 +1087,30 @@ export function PlayerTab({
           </>
         )}
 
+        {/* Rendered on every sub-tab and merely HIDDEN when another is showing.
+            Unmounting it threw away the fetched lyrics and readings, so coming
+            back re-ran two serialized round trips — lyrics first, then furigana
+            and translation, which need the lyric lines as their input — and the
+            readings visibly popped back in (seconds, not milliseconds, whenever
+            a song's reading wasn't cached yet). Staying mounted keeps all of
+            that state, so the tab switch is instant. */}
+        {lyricsAlive && nowPlaying && (
+          <div className={sub === "lyrics" ? "h-[55vh]" : "hidden"}>
+            <LyricsPanel
+              videoId={nowPlaying.videoId}
+              title={nowPlaying.title}
+              durationSec={player?.durationSec || nowPlaying.durationSec || 0}
+              currentTimeSec={player?.currentTimeSec ?? 0}
+              signedIn={signedIn}
+              isHost={isHost}
+              visible={sub === "lyrics"}
+            />
+          </div>
+        )}
         {sub === "lyrics" &&
           (nowPlaying ? (
-            <div className="h-[55vh]">
-              <LyricsPanel
-                videoId={nowPlaying.videoId}
-                title={nowPlaying.title}
-                durationSec={player?.durationSec || nowPlaying.durationSec || 0}
-                currentTimeSec={player?.currentTimeSec ?? 0}
-                signedIn={signedIn}
-                isHost={isHost}
-              />
-            </div>
+            // Mounting happens in the effect above, one render later.
+            !lyricsAlive && <p className="text-sm text-white/30">Loading lyrics…</p>
           ) : (
             <p className="text-sm text-white/30">
               Nothing playing yet — lyrics show for the current song.

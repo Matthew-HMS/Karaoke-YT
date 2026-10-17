@@ -357,36 +357,45 @@ db.exec(`
 `);
 ensureColumn("furigana", "ver", VER_COLUMN);
 ensureColumn("furigana", "src", SRC_COLUMN);
+// How many times we have generated/upgraded this row. A reading with gaps is
+// still cached (see lib/furigana.ts) so the song stops re-running in full on
+// every visit; this counter is what stops the gap-repair from re-asking
+// forever when some lines simply refuse to come back annotated.
+ensureColumn("furigana", "tries", "INTEGER NOT NULL DEFAULT 0");
 
 const getFuriganaStmt = db.prepare(
-  `SELECT data, ver, src FROM furigana WHERE videoId = ?`
+  `SELECT data, ver, src, tries FROM furigana WHERE videoId = ?`
 );
+
+export type CachedFurigana = { segments: FuriganaSegment[][]; tries: number };
 
 export function getCachedFurigana(
   videoId: string,
   src: string
-): FuriganaSegment[][] | null {
+): CachedFurigana | null {
   const row = getFuriganaStmt.get(videoId) as
-    | { data: string; ver: number; src: string }
+    | { data: string; ver: number; src: string; tries: number }
     | undefined;
   if (!row || row.ver !== READING_CACHE_VERSION || row.src !== src) return null;
-  return JSON.parse(row.data) as FuriganaSegment[][];
+  return { segments: JSON.parse(row.data) as FuriganaSegment[][], tries: row.tries };
 }
 
 const putFuriganaStmt = db.prepare(
-  `INSERT INTO furigana (videoId, data, fetchedAt, ver, src)
-   VALUES (@videoId, @data, @fetchedAt, @ver, @src)
+  `INSERT INTO furigana (videoId, data, fetchedAt, ver, src, tries)
+   VALUES (@videoId, @data, @fetchedAt, @ver, @src, @tries)
    ON CONFLICT(videoId) DO UPDATE SET
-     data = @data, fetchedAt = @fetchedAt, ver = @ver, src = @src`
+     data = @data, fetchedAt = @fetchedAt, ver = @ver, src = @src, tries = @tries`
 );
 
 export function putCachedFurigana(
   videoId: string,
   lines: FuriganaSegment[][],
-  src: string
+  src: string,
+  tries: number
 ): void {
   putFuriganaStmt.run({
     src,
+    tries,
     videoId,
     data: JSON.stringify(lines),
     fetchedAt: Date.now(),

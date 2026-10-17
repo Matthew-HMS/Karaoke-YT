@@ -30,6 +30,11 @@ type Props = {
   signedIn: boolean;
   // The host screen gets a "Restore" button to undo a wrong-lyrics report.
   isHost: boolean;
+  // False while another tab is showing. The panel stays MOUNTED then (see
+  // SongTabs) so its lyrics and readings survive a tab switch, but it must not
+  // try to scroll: a hidden element measures 0, so the maths would be junk and
+  // the active line would sit wherever it landed once the tab came back.
+  visible?: boolean;
 };
 
 type Loaded = {
@@ -49,6 +54,7 @@ export function LyricsPanel({
   currentTimeSec,
   signedIn,
   isHost,
+  visible = true,
 }: Props) {
   const settings = useSettings();
   const [data, setData] = useState<Loaded | null>(null);
@@ -87,6 +93,12 @@ export function LyricsPanel({
   const lastTransModel = useRef(settings.orcaModel);
   const lastTransRetry = useRef(readingRetry);
 
+  // The player re-reports its duration as a float every second. Round it before
+  // using it as a dependency: on sub-second jitter the lookup would re-run and
+  // hand the AI effects below a brand-new `data` object with identical content,
+  // which is what used to fire duplicate (billed) furigana calls per song.
+  const durationKey = Math.round(durationSec);
+
   // (Re)fetch whenever the song changes — or after a report (reloadKey).
   useEffect(() => {
     let active = true;
@@ -100,7 +112,7 @@ export function LyricsPanel({
     const params = new URLSearchParams({
       videoId,
       title,
-      duration: String(Math.round(durationSec)),
+      duration: String(durationKey),
     });
     // Smart lyrics cleanup: let the server try an LLM title parse on a miss.
     const useAi = settings.smartCleanup && settings.aiAvailable;
@@ -121,11 +133,9 @@ export function LyricsPanel({
       active = false;
       controller.abort();
     };
+    // `settings` is read through stable getters; only the fields listed matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    // `durationSec` is rounded in the dep for the same reason it's rounded in the
-    // query: the player re-reports a float every second, and re-running this on
-    // sub-second jitter would hand the AI effects a fresh `data` object each time.
-  }, [videoId, title, Math.round(durationSec), reloadKey, settings.smartCleanup, settings.aiAvailable, settings.orcaKey]);
+  }, [videoId, title, durationKey, reloadKey, settings.smartCleanup, settings.aiAvailable, settings.orcaKey]);
 
   // The lyric texts, plus a VALUE key for them. The AI effects below must depend
   // on this key and not on `data`: the player reports its duration every second
@@ -326,8 +336,11 @@ export function LyricsPanel({
     return idx;
   }, [synced, lines, currentTimeSec, offset]);
 
-  // Keep the active line centred in the scroll area.
+  // Keep the active line centred in the scroll area. `visible` is a dependency
+  // as well as a guard, so the line is re-centred the moment the tab comes back
+  // — the song kept playing while we were hidden and skipping the scroll.
   useEffect(() => {
+    if (!visible) return;
     const el = activeRef.current;
     const box = scrollRef.current;
     if (!el || !box) return;
@@ -335,7 +348,7 @@ export function LyricsPanel({
       top: el.offsetTop - box.clientHeight / 2 + el.clientHeight / 2,
       behavior: "smooth",
     });
-  }, [activeIndex]);
+  }, [activeIndex, visible]);
 
   const googleLink = (
     <a
