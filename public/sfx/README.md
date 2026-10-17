@@ -1,10 +1,10 @@
 # Sound effects
 
-Drop `.mp3` files here named after each reaction and they'll be used
-automatically (much better quality than the built-in synth). Any that are
-missing fall back to the in-browser synthesized version (`lib/sfx.ts`).
+The reaction buttons play real audio clips from this folder when they're
+present, and fall back to a built-in synthesized version for any that are
+missing — so the app works with this folder empty, just with rougher sounds.
 
-Expected filenames:
+To use real clips, drop `.mp3` files here with these names:
 
 - `applause.mp3`
 - `whistle.mp3`
@@ -13,5 +13,5 @@ Expected filenames:
 - `drumroll.mp3`
 - `sadtrombone.mp3`
 
-Use short clips (1–3s). Make sure you have the rights to any audio you ship
-(CC0 / royalty-free is safest for a public deployment).
+Keep them short (1–3 seconds). Make sure you have the rights to anything you
+ship — CC0 or royalty-free is the safe choice for a public deployment.

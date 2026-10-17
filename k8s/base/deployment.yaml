@@ -49,8 +49,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            # YouTube cookies for yt-dlp audio download (target-pitch line). The
-            # datacenter IP is bot-walled, so downloads need a signed-in session.
+            # Optional yt-dlp cookies, used only by the in-cluster
+            # melody-reference path (see k8s/README.md).
             - name: yt-cookies
               mountPath: /secrets/yt
               readOnly: true
@@ -98,8 +98,8 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: singalong-data
-        # `optional: true` so the pod still starts if the Secret isn't created
-        # yet (the app just runs without cookies until it exists). Create it with:
+        # `optional: true` so the pod still starts when this Secret doesn't
+        # exist (the app just runs without cookies). Create it with:
         #   kubectl -n karaoke create secret generic youtube-cookies \
         #     --from-file=cookies.txt=./cookies.txt
         - name: yt-cookies

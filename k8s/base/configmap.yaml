@@ -9,21 +9,15 @@ data:
   NODE_ENV: "production"
   DB_PATH: "/data/singalong.db"
   YTDLP_PATH: "/usr/local/bin/yt-dlp"
-  # OFFLOAD the karaoke target-pitch generation. This cluster's datacenter IP is
-  # bot-walled by YouTube (cookies/proxy tricks are fragile), so we DON'T download
-  # here. With REFERENCE_OFFLOAD=1 the app just records which videos need a
-  # contour (GET /api/reference/pending); an external worker on a non-walled IP
-  # (scripts/generate-worker.ts, e.g. on a school/home box) generates them and
-  # POSTs them back to /api/reference. REFERENCE_INGEST_TOKEN (in the Secret)
-  # authenticates that worker. Set to "0"/unset to generate on the cluster again.
+  # Where the melody-reference contours used by scoring get generated. With "1"
+  # the app only records which videos still need one and accepts finished
+  # contours from an external helper, authenticated by REFERENCE_INGEST_TOKEN in
+  # the Secret. Set "0" to generate them in-cluster instead.
   REFERENCE_OFFLOAD: "1"
-  # The YTDLP_* settings below only matter when NOT offloading (they tune the
-  # cluster's own yt-dlp). Kept for the fallback path. `android` downloads where
-  # the default/tv clients now 403 (verified 2026-10-15).
+  # yt-dlp settings for the in-cluster generation path; ignored while offloading.
   YTDLP_COOKIES: "/secrets/yt/cookies.txt"
   YTDLP_EXTRACTOR_ARGS: "youtube:player_client=android"
   YTDLP_PROXY: ""
-  # Public origin — MUST be your real DuckDNS host (used by Auth.js for OAuth
-  # redirects). Replace EXAMPLE everywhere before applying.
+  # Public origin — must match the host Auth.js issues OAuth redirects for.
   AUTH_URL: "https://sho-karaoke.duckdns.org"
   AUTH_TRUST_HOST: "true"

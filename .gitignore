@@ -46,3 +46,6 @@ CLAUDE.md
 singalong.db
 singalong.db-*
 .env.local
+
+# Private ops notes (never committed)
+*.local.md
