@@ -8,6 +8,7 @@ import type { FuriganaSegment } from "@/lib/types";
 import { aiJSON, aiJSONBatch, chunk, skipBlankLines } from "./aiCall";
 import { llmJSON, type AiAccess } from "./llm";
 import { getCachedFurigana, putCachedFurigana } from "./db";
+import { furiganaLinesLocal } from "./furiganaLocal";
 import { hasKana } from "./romanize";
 import { linesHash, singleFlight } from "./singleflight";
 
@@ -377,6 +378,33 @@ async function annotate(
       const upgraded = await repairDroppedLines(cached.segments, lines, opts.access);
       putCachedFurigana(videoId, upgraded, src, cached.tries + 1);
       return upgraded;
+    }
+  }
+
+  // DICTIONARY FIRST. kuromoji annotates ~99.9% of kanji offline in ~33ms with
+  // no key, no quota and no network, and its reconstruction guard did not trip
+  // once over the whole local library — so the model is reserved for the two
+  // things it is genuinely better at: an explicit ↻ re-roll (`refresh`, handled
+  // above by skipping this branch) and repairing the lines left bare, which the
+  // cache-hit path upgrades on a later visit. Set FURIGANA_ENGINE=llm to put
+  // the model back in front.
+  if (!opts.refresh && process.env.FURIGANA_ENGINE !== "llm") {
+    try {
+      const local = await furiganaLinesLocal(lines);
+      const gaps = droppedLineIndexes(local, lines).length;
+      const kanjiLines = lines.filter((l) => KANJI_RE.test(l)).length;
+      // Accept unless the dictionary essentially failed on this song (an unusual
+      // script, heavy ateji), in which case the model is the better bet.
+      if (gaps * 2 <= kanjiLines) {
+        // Stored one short of the cap, like a fresh model reading, so a later
+        // visit may spend ONE repair call on whatever came back bare.
+        putCachedFurigana(videoId, local, src, MAX_ATTEMPTS - 1);
+        return local;
+      }
+      console.warn(`[furigana] dictionary left ${gaps}/${kanjiLines} lines bare, asking the model`);
+    } catch (e) {
+      // A missing or unreadable dictionary must not take readings down with it.
+      console.warn("[furigana] dictionary unavailable, falling back to the model:", e);
     }
   }
 

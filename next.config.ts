@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // kuromoji reads its IPADIC dictionary off disk at runtime (lib/furiganaLocal.ts)
+  // and is not on Next's auto-externalised list, so bundling it into the route
+  // handler would break that read. Keep it on native require.
+  serverExternalPackages: ["kuromoji"],
+
   // Allow phones/other devices on the LAN to load dev resources (HMR, etc.)
   // when the app is opened via the Mac's IP instead of localhost.
   // Next 16 blocks cross-origin dev requests by default, which breaks client

@@ -88,6 +88,8 @@ personal favourites.
   and your adjustment is remembered for that song next time.
 - **🇯🇵 Japanese reading aid** — show **furigana** above the kanji or **romaji**
   under each line, so you can sing along to a Japanese song you can't read.
+  Furigana is generated **offline** by a Japanese dictionary, so it needs no API
+  key and works instantly; romaji still uses the AI key.
 - **🌏 Translation** — pick a language and see what each line means under it.
 - **⚐ Report** lyrics that are plainly wrong (signed-in users), and the app
   looks for a better match next time. The host screen can **↩ Restore** a
@@ -163,7 +165,7 @@ the app runs with an empty file, just with fewer features.
 | `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL` | Google sign-in and personal favourites. `AUTH_URL` must be your public origin — **required** if you're behind a proxy or tunnel. |
 | `YOUTUBE_API_KEY` | Metadata for pasted links, chart-based top hits, and a search fallback. |
 | `RAPIDAPI_KEY` | A second lyrics source for songs the free one doesn't have. |
-| `ORCAROUTER_API_KEY` | The AI features (Ask AI, reading aid, translation). **Server-side only — never prefix it with `NEXT_PUBLIC_`.** Users can also bring their own key in ⚙ Settings. |
+| `ORCAROUTER_API_KEY` | The AI features (Ask AI, romaji, translation — furigana runs offline and needs no key). **Server-side only — never prefix it with `NEXT_PUBLIC_`.** Users can also bring their own key in ⚙ Settings. |
 
 See the comments in `.env.local.example` for the rest, and don't commit
 `.env.local`.

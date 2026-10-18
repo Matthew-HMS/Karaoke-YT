@@ -273,7 +273,7 @@ export function clearRejectedLyrics(videoId: string): void {
 //    reply. Rows written by version 1 can hold a reading shifted onto the wrong
 //    lines — which reads as perfectly fluent text, so nobody would think to hit
 //    ↻ Re-translate on it. They have to go.
-const READING_CACHE_VERSION = 2;
+const READING_CACHE_VERSION = 3;
 
 function hasColumn(table: string, column: string): boolean {
   const cols = db.pragma(`table_info(${table})`) as { name: string }[];
