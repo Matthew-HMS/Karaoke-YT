@@ -267,7 +267,13 @@ export function clearRejectedLyrics(videoId: string): void {
 // version are then treated as a MISS and regenerated instead of serving a stale,
 // truncated "half the song" result. Existing rows (added before the `ver` column)
 // default to 0, so they're invalidated the first time a newer version reads them.
-const READING_CACHE_VERSION = 1;
+//
+// 2: replies are now mapped to lyric lines by CONTENT (furigana) or by an index
+//    the model echoes back (romaji, translation), instead of by position in the
+//    reply. Rows written by version 1 can hold a reading shifted onto the wrong
+//    lines — which reads as perfectly fluent text, so nobody would think to hit
+//    ↻ Re-translate on it. They have to go.
+const READING_CACHE_VERSION = 2;
 
 function hasColumn(table: string, column: string): boolean {
   const cols = db.pragma(`table_info(${table})`) as { name: string }[];
@@ -457,6 +463,27 @@ export function putCachedTranslation(
     fetchedAt: Date.now(),
     ver: READING_CACHE_VERSION,
   });
+}
+
+// Drop the readings an older pipeline wrote, once, at startup.
+//
+// Strictly speaking this is housekeeping: every getCached* above already treats
+// a `ver` mismatch as a miss, and the tables hold ONE row per song (the puts are
+// ON CONFLICT(videoId) DO UPDATE), so a stale row is overwritten the next time
+// that song is played and nothing accumulates. What it buys is the rows for
+// songs nobody plays again — those would sit there holding wrong readings
+// forever. Clearing them keeps the tables honest: everything still in there is
+// something the current pipeline produced.
+//
+// Safe to run on every boot and in every process: it only deletes rows that are
+// already unreadable, so a second run finds nothing.
+for (const table of ["romaji", "furigana", "translation"]) {
+  const { changes } = db
+    .prepare(`DELETE FROM ${table} WHERE ver != ?`)
+    .run(READING_CACHE_VERSION);
+  if (changes > 0) {
+    console.log(`[db] dropped ${changes} ${table} row(s) from an older reading pipeline`);
+  }
 }
 
 // ---- AI free-use quota ----

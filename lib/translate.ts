@@ -4,7 +4,14 @@
 // — but the target language is a parameter, so the cache is keyed by (videoId,
 // lang) and we SKIP songs already in the chosen language.
 
-import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
+import {
+  aiJSON,
+  aiJSONBatch,
+  chunk,
+  numberLines,
+  alignIndexed,
+  repairIndexedGaps,
+} from "./aiCall";
 import { linesHash, singleFlight } from "./singleflight";
 import type { AiAccess } from "./llm";
 import { getCachedTranslation, putCachedTranslation } from "./db";
@@ -37,23 +44,20 @@ export function alreadyInLang(lines: string[], lang: TranslateLang): boolean {
 
 const SYSTEM = (langName: string) => `You translate song lyrics into ${langName}.
 Rules:
-- Input is a JSON array of lyric lines (strings), in order.
-- Reply with ONLY a JSON array of the SAME length, no prose, no code fences.
-- Output[i] is the ${langName} translation of input[i].
-- Preserve line order and count exactly. Punctuation-only or empty lines map to "".
+- Input is a JSON array of lyric lines, each written "<n>|<lyric>".
+- Reply with ONLY a JSON array of strings, each written "<n>|<translation>", no prose, no code fences.
+- Reuse the SAME <n> as the line you translated. One entry per input line, in order.
+- Never merge two input lines into one entry and never split one into two — if two lines read as one sentence, still answer them separately, each with its own <n>.
+- Punctuation-only or empty lines map to "<n>|".
 - If a line is already in ${langName}, return it unchanged.
 - Translate the MEANING into natural ${langName}, not word-for-word.`;
 
-// Force the LLM output back into an array the same length as `count`, so the UI's
-// index-based interleaving never drifts. Missing entries become "".
+// Force the LLM output back into an array the same length as `count`, so the
+// UI's index-based interleaving never drifts. Each reply entry says which line
+// it answers (see numberLines); an untagged reply is read positionally, as
+// before. Lines nobody answered for become "" and are re-asked once.
 export function alignTranslation(raw: unknown, count: number): string[] {
-  const arr = Array.isArray(raw) ? raw : [];
-  const out: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const v = arr[i];
-    out.push(typeof v === "string" ? v.trim() : "");
-  }
-  return out;
+  return alignIndexed(raw, count);
 }
 
 // Translate a song's lyric lines into `lang` (one string per input line), or null
@@ -90,9 +94,15 @@ async function translate(
   const langName = TRANSLATE_LANGS[lang].name;
   const prompt = (batch: string[]) => [
     { role: "system" as const, content: SYSTEM(langName) },
-    { role: "user" as const, content: JSON.stringify(batch) },
+    { role: "user" as const, content: JSON.stringify(numberLines(batch)) },
   ];
 
+  // NOTE: blank lines are deliberately sent here, unlike furigana. They cost a
+  // few tokens but keep the model's line discipline: measured on a 43-line song,
+  // sending all 43 came back 42 long, while sending only the 39 filled lines
+  // came back 36 — it ran four consecutive spoken-word lines together. Furigana
+  // can detect and undo a merge by matching text; a translation can't, so the
+  // cheapest defence is not to provoke it. Indexing (below) catches the rest.
   let out: string[];
   if (lines.length <= CHUNK_LINES) {
     const raw = await aiJSON<unknown>({
@@ -113,10 +123,19 @@ async function translate(
     out = raws.flatMap((raw, i) => alignTranslation(raw, batches[i].length));
   }
 
+  // Second chance for the lines the reply skipped, before anything is cached —
+  // a cache hit never re-calls, so a gap left here is a gap for good.
+  out = await repairIndexedGaps({
+    access: opts.access,
+    system: SYSTEM(langName),
+    answers: out,
+    lines,
+  });
+
   // Cached even if a chunk came back empty. Not caching it meant the whole song
-  // re-ran on every visit, which costs far more than the blank range is worth;
-  // unlike furigana there is no per-line repair here, so ↻ Re-translate (which
-  // bypasses the cache) is the way to re-roll a bad one.
+  // re-ran on every visit, which costs far more than the blank range is worth.
+  // Anything the repair pass above could not fill stays blank; ↻ Re-translate
+  // (which bypasses the cache) is the way to re-roll it.
   putCachedTranslation(videoId, lang, out, src);
   return out;
 }

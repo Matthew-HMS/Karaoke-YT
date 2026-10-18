@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseQueries } from "@/lib/aiSuggest";
-import { aiJSONBatch, chunk } from "@/lib/aiCall";
+import {
+  aiJSONBatch,
+  alignIndexed,
+  chunk,
+  indexedGaps,
+  numberLines,
+  repairIndexedGaps,
+} from "@/lib/aiCall";
 import { alignTranslation, alreadyInLang } from "@/lib/translate";
 import { isTranslateLang } from "@/lib/translateLangs";
 import { hasKana, alignRomaji } from "@/lib/romanize";
@@ -225,6 +232,89 @@ describe("alignRomaji", () => {
   it("coerces non-strings and trims, and handles non-array input", () => {
     expect(alignRomaji(["  hi ", 5, null], 3)).toEqual(["hi", "", ""]);
     expect(alignRomaji("nope", 2)).toEqual(["", ""]);
+  });
+});
+
+describe("indexed replies (which line is this an answer for?)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("numbers the lines it sends", () => {
+    expect(numberLines(["夜に", "", "朝"])).toEqual(["0|夜に", "1|", "2|朝"]);
+  });
+
+  it("places each answer by its own index, not its position", () => {
+    // The model merged lines 1 and 2 into one answer and tagged it "1".
+    // Positionally that used to shift lines 2 and 3 onto the wrong text; now
+    // line 2 is simply blank and everything after it stays correct.
+    const raw = ["0|first", "1|second and third", "3|fourth"];
+    expect(alignIndexed(raw, 4)).toEqual(["first", "second and third", "", "fourth"]);
+  });
+
+  it("ignores out-of-range indexes and keeps the first answer for a line", () => {
+    expect(alignIndexed(["9|nope", "0|good", "0|later"], 2)).toEqual(["good", ""]);
+  });
+
+  it("falls back to positional when the model ignored the protocol", () => {
+    // Untagged replies must behave exactly as before — never worse than the old
+    // code just because a rule was dropped.
+    expect(alignIndexed([" a ", "b"], 3)).toEqual(["a", "b", ""]);
+    expect(alignIndexed("nope", 2)).toEqual(["", ""]);
+  });
+
+  it("finds the lines nobody answered for, ignoring blanks, up to a cap", () => {
+    const lines = ["一", "", "二", "三"];
+    expect(indexedGaps(["x", "", "", ""], lines, 9)).toEqual([2, 3]);
+    expect(indexedGaps(["x", "", "", ""], lines, 1)).toEqual([2]);
+    expect(indexedGaps(["x", "", "y", "z"], lines, 9)).toEqual([]);
+  });
+
+  it("repairs the gaps and leaves everything else alone", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        status: 200,
+        ok: true,
+        json: async (): Promise<unknown> => ({
+          choices: [{ message: { content: '["0|second","1|third"]' } }],
+        }),
+        text: async (): Promise<string> => "",
+      }))
+    );
+    const out = await repairIndexedGaps({
+      access: { keys: ["sk-test"], mode: "user", model: "m" },
+      system: "sys",
+      answers: ["first", "", ""],
+      lines: ["一", "二", "三"],
+    });
+    expect(out).toEqual(["first", "second", "third"]);
+  });
+
+  it("keeps what it has when the repair call fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ status: 401, ok: false, text: async (): Promise<string> => "" }))
+    );
+    const answers = ["first", "", "third"];
+    await expect(
+      repairIndexedGaps({
+        access: { keys: ["sk-test"], mode: "user", model: "m" },
+        system: "sys",
+        answers,
+        lines: ["一", "二", "三"],
+      })
+    ).resolves.toEqual(answers);
+  });
+
+  it("makes no call when there is nothing to repair", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await repairIndexedGaps({
+      access: { keys: ["sk-test"], mode: "user", model: "m" },
+      system: "sys",
+      answers: ["a", "b"],
+      lines: ["一", "二"],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -471,6 +561,95 @@ describe("coerceFurigana", () => {
       [{ t: "う" }],
     ]);
   });
+
+  it("splits an element that swallowed two lines back onto both", () => {
+    // The model glues short lines together. Read positionally that shifted
+    // every later line onto someone else's reading, and the guard then blanked
+    // the whole chunk.
+    const raw = [
+      [
+        { t: "君", r: "きみ" },
+        { t: "が" },
+        { t: "僕", r: "ぼく" },
+        { t: "に" },
+        { t: "見", r: "み" },
+        { t: "せてくれた" },
+      ],
+    ];
+    expect(coerceFurigana(raw, ["君が僕に", "見せてくれた"])).toEqual([
+      [{ t: "君", r: "きみ" }, { t: "が" }, { t: "僕", r: "ぼく" }, { t: "に" }],
+      [{ t: "見", r: "み" }, { t: "せてくれた" }],
+    ]);
+  });
+
+  it("splits a merge that falls inside a plain segment", () => {
+    expect(coerceFurigana([[{ t: "ないよまるで" }]], ["ないよ", "まるで"])).toEqual([
+      [{ t: "ないよ" }],
+      [{ t: "まるで" }],
+    ]);
+  });
+
+  it("never splits a kanji run — one reading can't cover two lines", () => {
+    // "記念" + "日" would need the reading halved, so both lines stay plain.
+    const raw = [[{ t: "記念日", r: "きねんび" }]];
+    expect(coerceFurigana(raw, ["記念", "日"])).toEqual([
+      [{ t: "記念" }],
+      [{ t: "日" }],
+    ]);
+  });
+
+  it("keeps blank lines plain without consuming an element", () => {
+    // A lyric sheet's verse breaks have nothing to read, and the model answers
+    // 30 lines with 29 elements by quietly dropping them.
+    const raw = [
+      [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "記念日", r: "きねんび" }],
+      [{ t: "明日", r: "あした" }, { t: "も" }],
+    ];
+    expect(coerceFurigana(raw, ["今日は記念日", "", "明日も"])).toEqual([
+      [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "記念日", r: "きねんび" }],
+      [{ t: "" }],
+      [{ t: "明日", r: "あした" }, { t: "も" }],
+    ]);
+  });
+
+  it("restores a space the model normalised away", () => {
+    // Spacing comes from the LINE, readings from the model; a swallowed space
+    // used to throw away an otherwise perfect reading.
+    const raw = [[{ t: "「ありがとう」と" }, { t: "言", r: "い" }, { t: "えた" }]];
+    expect(coerceFurigana(raw, ["「ありがとう」 と言えた"])).toEqual([
+      [{ t: "「ありがとう」 と" }, { t: "言", r: "い" }, { t: "えた" }],
+    ]);
+  });
+
+  it("refuses to put a space inside a ruby base", () => {
+    // The annotation would be drawn across the gap; plain text is the safe answer.
+    expect(coerceFurigana([[{ t: "君だ", r: "きみだ" }]], ["君 だ"])).toEqual([
+      [{ t: "君 だ" }],
+    ]);
+  });
+
+  it("resyncs past an element that fits no line", () => {
+    const raw = [
+      [{ t: "まったく違う" }],
+      [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "記念日", r: "きねんび" }],
+      [{ t: "明日", r: "あした" }, { t: "も" }],
+    ];
+    expect(coerceFurigana(raw, ["今日は記念日", "明日も"])).toEqual([
+      [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "記念日", r: "きねんび" }],
+      [{ t: "明日", r: "あした" }, { t: "も" }],
+    ]);
+  });
+
+  it("costs ONE line when a line's reading never came back", () => {
+    // The model skipped line 0. Positionally, line 1's reading landed on line 0
+    // (guard-rejected) and line 1 went plain too — two losses from one. Now
+    // line 1 keeps its own reading.
+    const raw = [[{ t: "明日", r: "あした" }, { t: "も" }]];
+    expect(coerceFurigana(raw, ["今日は記念日", "明日も"])).toEqual([
+      [{ t: "今日は記念日" }],
+      [{ t: "明日", r: "あした" }, { t: "も" }],
+    ]);
+  });
 });
 
 describe("droppedLineIndexes (lines the guard silently blanked)", () => {
@@ -537,6 +716,33 @@ describe("llmJSON (OrcaRouter client)", () => {
     ok: true,
     json: async (): Promise<unknown> => ({ choices: [{ message: { content } }] }),
     text: async (): Promise<string> => "",
+  });
+
+  it("keeps a short reply when the time budget runs out", async () => {
+    // The budget covers every attempt, so the LAST re-ask is the one that gets
+    // cut off. Throwing then discarded a reply we already held and lost a whole
+    // chunk of a song for nothing.
+    let call = 0;
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      call++;
+      if (call === 1) return okResponse('["a","b"]'); // short of `expect`
+      // A slow upstream: hang until the caller's signal gives up.
+      return await new Promise<never>((_, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await llmJSON<string[]>({
+      keys: ["sk-test"],
+      messages: [{ role: "user", content: "hi" }],
+      expect: 3,
+      signal: AbortSignal.timeout(80),
+    });
+    expect(out).toEqual(["a", "b"]);
   });
 
   it("parses JSON returned inside a ```json fence", async () => {

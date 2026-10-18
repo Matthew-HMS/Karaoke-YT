@@ -8,7 +8,14 @@
 // are cached in SQLite per videoId, exactly like the lyrics cache, so a song is
 // only ever romanised once.
 
-import { aiJSON, aiJSONBatch, chunk } from "./aiCall";
+import {
+  aiJSON,
+  aiJSONBatch,
+  chunk,
+  numberLines,
+  alignIndexed,
+  repairIndexedGaps,
+} from "./aiCall";
 import { linesHash, singleFlight } from "./singleflight";
 import type { AiAccess } from "./llm";
 import { getCachedRomaji, putCachedRomaji } from "./db";
@@ -30,22 +37,19 @@ export function hasKana(text: string): boolean {
 const SYSTEM = `You transliterate Japanese song lyrics into Hepburn romaji.
 
 Rules:
-- Input is a JSON array of lyric lines (strings), in order.
-- Reply with ONLY a JSON array of the SAME length, no prose, no code fences.
-- Output[i] is the Hepburn romaji for input[i].
-- Preserve line order and count exactly. An empty or non-Japanese line maps to "".
+- Input is a JSON array of lyric lines, each written "<n>|<lyric>".
+- Reply with ONLY a JSON array of strings, each written "<n>|<romaji>", no prose, no code fences.
+- Reuse the SAME <n> as the line you transliterated. One entry per input line, in order.
+- Never merge two input lines into one entry and never split one into two — if two lines read as one sentence, still answer them separately.
+- An empty or non-Japanese line maps to "<n>|".
 - Romaji only in the output — no kana, no kanji.`;
 
-// Force the LLM output back into an array the same length as `lines`, so the UI's
-// index-based interleaving never drifts. Missing entries become "".
+// Force the LLM output back into an array the same length as `lines`, so the
+// UI's index-based interleaving never drifts. Each reply entry says which line
+// it answers (see numberLines); an untagged reply is read positionally, as
+// before. Lines nobody answered for become "" and are re-asked once.
 export function alignRomaji(raw: unknown, count: number): string[] {
-  const arr = Array.isArray(raw) ? raw : [];
-  const out: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const v = arr[i];
-    out.push(typeof v === "string" ? v.trim() : "");
-  }
-  return out;
+  return alignIndexed(raw, count);
 }
 
 // Romanise a song's lyric lines (returns one romaji string per input line, or
@@ -81,9 +85,15 @@ async function romanize(
 
   const prompt = (batch: string[]) => [
     { role: "system" as const, content: SYSTEM },
-    { role: "user" as const, content: JSON.stringify(batch) },
+    { role: "user" as const, content: JSON.stringify(numberLines(batch)) },
   ];
 
+  // NOTE: blank lines are deliberately sent here, unlike furigana. They cost a
+  // few tokens but keep the model's line discipline: measured on a 43-line song,
+  // sending all 43 came back 42 long, while sending only the 39 filled lines
+  // came back 36 — it ran four consecutive spoken-word lines together. Furigana
+  // can detect and undo a merge by matching text; a translation can't, so the
+  // cheapest defence is not to provoke it. Indexing (below) catches the rest.
   let romaji: string[];
   if (lines.length <= CHUNK_LINES) {
     // Short song → one call (the common case).
@@ -107,10 +117,19 @@ async function romanize(
     romaji = raws.flatMap((raw, i) => alignRomaji(raw, batches[i].length));
   }
 
+  // Second chance for the lines the reply skipped, before anything is cached —
+  // a cache hit never re-calls, so a gap left here is a gap for good.
+  romaji = await repairIndexedGaps({
+    access: opts.access,
+    system: SYSTEM,
+    answers: romaji,
+    lines,
+  });
+
   // Cached even if a chunk came back empty. Not caching it meant the whole
   // song re-ran on every visit, which costs far more than the blank range is
-  // worth; unlike furigana there is no per-line repair here, so ↻ Re-translate
-  // (which bypasses the cache) is the way to re-roll a bad one.
+  // worth. Anything the repair pass above could not fill stays blank; ↻
+  // Re-translate (which bypasses the cache) is the way to re-roll it.
   putCachedRomaji(videoId, romaji, src);
   return romaji;
 }

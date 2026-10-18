@@ -345,6 +345,11 @@ async function runPool<T>(
         // operation, so retrying other keys is pointless — surface it as a slow
         // model so the UI can suggest a faster one.
         if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+          // Unless we already hold a short reply: the budget ran out while
+          // trying to BETTER it, and throwing it away loses a whole chunk of a
+          // song for nothing. Partial beats empty, and furigana realigns and
+          // repairs what's missing from here.
+          if (best !== undefined) return best;
           throw new LlmTimeout();
         }
         throw e;

@@ -483,7 +483,11 @@ export function LyricsPanel({
             const furi = furigana?.[i];
             const tr = translation?.[i];
             return (
-              <div key={i} ref={isActive ? activeRef : undefined}>
+              // The gap goes BETWEEN lines, not inside one: a lyric with its
+              // reading and translation is one group, so the tight paddings
+              // within it stay as they are. Also keeps one line's ruby text
+              // clear of the line above.
+              <div key={i} className="pb-3" ref={isActive ? activeRef : undefined}>
               <p
                 className={`pt-1.5 leading-snug transition-colors duration-200 ${
                   rj ? "pb-0" : "pb-1.5"
