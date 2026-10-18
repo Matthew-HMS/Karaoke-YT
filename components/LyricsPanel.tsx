@@ -427,9 +427,12 @@ export function LyricsPanel({
           )}
         </div>
       </div>
-      {/* On error: the hint + Retry. On a shown reading: a subtle Re-translate so
-          a wrong/stale one can be re-rolled (e.g. after switching to a better
-          model) — both force a fresh, cache-bypassing translation. */}
+      {/* On error: the hint + Retry. Otherwise a subtle "Refresh with AI" so a
+          wrong/stale aid can be re-rolled (e.g. after switching to a better
+          model). Both bump readingRetry, which the reading AND translation
+          effects watch, so one click refreshes every aid that is on, bypassing
+          the cache. Furigana comes from the dictionary now, so for it the model
+          is asked to CORRECT that reading rather than regenerate the song. */}
       {readingNote ? (
         <p className="mb-1 rounded-lg bg-white/5 px-2 py-1 text-center text-[11px] text-amber-300/80">
           {readingNote}{" "}
@@ -448,7 +451,7 @@ export function LyricsPanel({
             onClick={() => setReadingRetry((k) => k + 1)}
             className="underline underline-offset-2 transition hover:text-white/60"
           >
-            ↻ Re-translate
+            ↻ Refresh with AI
           </button>
         </p>
       ) : null}

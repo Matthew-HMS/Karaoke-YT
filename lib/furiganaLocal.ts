@@ -41,8 +41,15 @@ const OVERRIDES: ReadonlyArray<readonly [string, readonly FuriganaSegment[]]> = 
     // IPADIC reads these as the counter (いちにん / ににん).
     ["一人", [{ t: "一人", r: "ひとり" }]],
     ["二人", [{ t: "二人", r: "ふたり" }]],
+    // Lyrics often write these with half-width digits.
+    ["1人", [{ t: "1人", r: "ひとり" }]],
+    ["2人", [{ t: "2人", r: "ふたり" }]],
     // 通り is voiced after いつも.
     ["いつも通り", [{ t: "いつも" }, { t: "通", r: "どお" }, { t: "り" }]],
+    // Rendaku in a compound IPADIC does not list: it splits 一番星 into
+    // 一番 + 星 and so never voices the 星. Same shape for 流れ星.
+    ["一番星", [{ t: "一番星", r: "いちばんぼし" }]],
+    ["流れ星", [{ t: "流", r: "なが" }, { t: "れ" }, { t: "星", r: "ぼし" }]],
   ] as ReadonlyArray<readonly [string, readonly FuriganaSegment[]]>
 )
   .slice()

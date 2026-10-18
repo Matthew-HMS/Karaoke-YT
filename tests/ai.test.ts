@@ -11,7 +11,7 @@ import {
 import { alignTranslation, alreadyInLang } from "@/lib/translate";
 import { isTranslateLang } from "@/lib/translateLangs";
 import { hasKana, alignRomaji } from "@/lib/romanize";
-import { coerceFurigana, droppedLineIndexes } from "@/lib/furigana";
+import { applyRevisions, coerceFurigana, droppedLineIndexes, type RevisionLog } from "@/lib/furigana";
 import { linesHash, singleFlight } from "@/lib/singleflight";
 import {
   DEFAULT_MODEL,
@@ -1017,5 +1017,242 @@ describe("llmJSON (OrcaRouter client)", () => {
     expect(err).toBeInstanceOf(LlmRateLimited);
     expect((err as LlmRateLimited).retryAfterSeconds).toBe(19084);
     expect(fetchMock).toHaveBeenCalledTimes(1); // one try, no pointless rounds
+  });
+});
+
+describe("applyRevisions (AI corrects the dictionary, never undercuts it)", () => {
+  const lines = ["そんな日々もどこか愛おしくて", "君が僕に見せてくれた"];
+  // What the dictionary produced: 愛 is wrong (あい, should be いと).
+  const base = [
+    [
+      { t: "そんな" },
+      { t: "日々", r: "ひび" },
+      { t: "もどこか" },
+      { t: "愛", r: "あい" },
+      { t: "おしくて" },
+    ],
+    [
+      { t: "君", r: "きみ" },
+      { t: "が" },
+      { t: "僕", r: "ぼく" },
+      { t: "に" },
+      { t: "見", r: "み" },
+      { t: "せてくれた" },
+    ],
+  ];
+
+  it("applies a correction and leaves every other line alone", () => {
+    const out = applyRevisions(base, lines, [
+      {
+        i: 0,
+        segs: [
+          { t: "そんな" },
+          { t: "日々", r: "ひび" },
+          { t: "もどこか" },
+          { t: "愛", r: "いと" },
+          { t: "おしくて" },
+        ],
+      },
+    ]);
+    expect(out[0].find((s) => s.t === "愛")?.r).toBe("いと");
+    expect(out[1]).toEqual(base[1]);
+  });
+
+  it("rejects a correction that does not reconstruct the line", () => {
+    const out = applyRevisions(base, lines, [
+      { i: 0, segs: [{ t: "まったく違う行", r: "ちがう" }] },
+    ]);
+    expect(out[0]).toEqual(base[0]);
+  });
+
+  // The whole point of correcting rather than regenerating: the model cannot
+  // hand back a line with fewer readings than the dictionary already had.
+  it("rejects a correction that would lose coverage", () => {
+    const out = applyRevisions(base, lines, [
+      {
+        i: 1,
+        segs: [
+          { t: "君", r: "きみ" },
+          { t: "が僕に見せてくれた" }, // dropped 僕 and 見
+        ],
+      },
+    ]);
+    expect(out[1]).toEqual(base[1]);
+  });
+
+  it("accepts a correction that adds a reading to a bare line", () => {
+    const bareLines = ["夜露死苦"];
+    const bare = [[{ t: "夜露死苦" }]];
+    const out = applyRevisions(bare, bareLines, [
+      { i: 0, segs: [{ t: "夜露死苦", r: "よろしく" }] },
+    ]);
+    expect(out[0]).toEqual([{ t: "夜露死苦", r: "よろしく" }]);
+  });
+
+  it("ignores junk, bad indexes and readings on kana", () => {
+    expect(applyRevisions(base, lines, null)).toEqual(base);
+    expect(applyRevisions(base, lines, "nope")).toEqual(base);
+    expect(applyRevisions(base, lines, [{ i: 99, segs: [{ t: "x" }] }])).toEqual(base);
+    expect(applyRevisions(base, lines, [{ i: 1.5, segs: [{ t: "x" }] }])).toEqual(base);
+    // a reading on kana, and a latin "reading" — both refused
+    expect(
+      applyRevisions(base, lines, [
+        { i: 1, segs: [{ t: "君", r: "きみ" }, { t: "が", r: "ga" }, { t: "僕に見せてくれた" }] },
+      ])
+    ).toEqual(base);
+  });
+});
+
+describe("applyRevisions rejects malformed corrections seen from a live model", () => {
+  // Both of these were returned by the free model on a real song: they
+  // reconstruct the line and keep coverage, so only a targeted check stops them.
+  it("refuses ruby over a run that contains kana", () => {
+    const lines = ["一番星を掻き消すような"];
+    const base = [
+      [{ t: "一番", r: "いちばん" }, { t: "星", r: "ほし" }, { t: "を" }, { t: "掻", r: "か" }, { t: "き" }, { t: "消", r: "け" }, { t: "すような" }],
+    ];
+    const out = applyRevisions(base, lines, [
+      { i: 0, segs: [{ t: "一番星", r: "いちばんぼし" }, { t: "を掻き消すような", r: "をかきけすような" }] },
+    ]);
+    expect(out[0]).toEqual(base[0]); // the whole correction is refused
+  });
+
+  it("drops a reading that swallowed the kana in front of it, keeping the good fix beside it", () => {
+    const lines = ["今日は一日中雨だった"];
+    const base = [
+      [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "一日中", r: "いちにちじゅう" }, { t: "雨", r: "う" }, { t: "だった" }],
+    ];
+    const out = applyRevisions(base, lines, [
+      { i: 0, segs: [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "一日中", r: "はいちにちじゅう" }, { t: "雨", r: "あめ" }, { t: "だった" }] },
+    ]);
+    // は… refused, so 一日中 keeps the dictionary reading…
+    expect(out[0].find((s) => s.t === "一日中")?.r).toBe("いちにちじゅう");
+    // …while the genuine 雨 correction in the same reply still lands.
+    expect(out[0].find((s) => s.t === "雨")?.r).toBe("あめ");
+  });
+
+  it("still accepts a genuine rendaku fix that regroups a compound", () => {
+    const lines = ["一番星を見た"];
+    const base = [[{ t: "一番", r: "いちばん" }, { t: "星", r: "ほし" }, { t: "を" }, { t: "見", r: "み" }, { t: "た" }]];
+    const out = applyRevisions(base, lines, [
+      { i: 0, segs: [{ t: "一番星", r: "いちばんぼし" }, { t: "を" }, { t: "見", r: "み" }, { t: "た" }] },
+    ]);
+    expect(out[0][0]).toEqual({ t: "一番星", r: "いちばんぼし" });
+  });
+});
+
+describe("aiJSONBatch parallel mode (opt-in)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const reply = (body: unknown, status = 200) => ({
+    status,
+    ok: status < 400,
+    json: async (): Promise<unknown> => body,
+    text: async (): Promise<string> => JSON.stringify(body),
+  });
+
+  it("keeps results in batch order even when the later chunk answers first", async () => {
+    // Chunk 0 is slow, chunk 1 is instant: sequential order must still hold.
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const slow = String(init.body).includes("slow");
+      if (slow) await new Promise((r) => setTimeout(r, 40));
+      return reply({ choices: [{ message: { content: JSON.stringify([slow ? "first" : "second"]) } }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await aiJSONBatch<string[]>({
+      access: { keys: ["sk-x"], mode: "user", model: "m" },
+      clientId: "c",
+      batches: [[{ role: "user", content: "slow" }], [{ role: "user", content: "fast" }]],
+      parallel: true,
+    });
+    expect(out).toEqual([["first"], ["second"]]);
+  });
+
+  it("actually overlaps the calls", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const fetchMock = vi.fn(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return reply({ choices: [{ message: { content: JSON.stringify(["x"]) } }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await aiJSONBatch<string[]>({
+      access: { keys: ["sk-x"], mode: "user", model: "m" },
+      clientId: "c",
+      batches: [
+        [{ role: "user", content: "a" }],
+        [{ role: "user", content: "b" }],
+        [{ role: "user", content: "c" }],
+      ],
+      parallel: true,
+    });
+    expect(peak).toBe(3); // sequential would never exceed 1
+  });
+
+  it("nulls a failed chunk and keeps the rest, like the sequential path", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      String(init.body).includes("bad")
+        ? reply({ error: { message: "nope" } }, 500)
+        : reply({ choices: [{ message: { content: JSON.stringify(["ok"]) } }] })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await aiJSONBatch<string[]>({
+      access: { keys: ["sk-x"], mode: "user", model: "m" },
+      clientId: "c",
+      batches: [[{ role: "user", content: "good" }], [{ role: "user", content: "bad" }]],
+      parallel: true,
+    });
+    expect(out[0]).toEqual(["ok"]);
+    expect(out[1]).toBeNull();
+  });
+
+  it("throws when every chunk fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => reply({ error: { message: "nope" } }, 500)));
+    await expect(
+      aiJSONBatch<string[]>({
+        access: { keys: ["sk-x"], mode: "user", model: "m" },
+        clientId: "c",
+        batches: [[{ role: "user", content: "a" }], [{ role: "user", content: "b" }]],
+        parallel: true,
+      })
+    ).rejects.toThrow();
+  });
+});
+
+describe("applyRevisions logging (what to promote into OVERRIDES)", () => {
+  const newLog = (): RevisionLog => ({ applied: [], rejected: [] });
+
+  it("records an applied correction with both readings", () => {
+    const lines = ["一番星を見た"];
+    const base = [[{ t: "一番", r: "いちばん" }, { t: "星", r: "ほし" }, { t: "を" }, { t: "見", r: "み" }, { t: "た" }]];
+    const log = newLog();
+    applyRevisions(base, lines, [
+      { i: 0, segs: [{ t: "一番星", r: "いちばんぼし" }, { t: "を" }, { t: "見", r: "み" }, { t: "た" }] },
+    ], log);
+    expect(log.applied).toContainEqual({ line: 0, run: "一番星", from: "", to: "いちばんぼし" });
+    expect(log.rejected).toHaveLength(0);
+  });
+
+  it("records why a correction was refused", () => {
+    const lines = ["今日は一日中雨だった"];
+    const base = [[{ t: "今日", r: "きょう" }, { t: "は" }, { t: "一日中", r: "いちにちじゅう" }, { t: "雨", r: "う" }, { t: "だった" }]];
+    const log = newLog();
+    applyRevisions(base, lines, [
+      { i: 0, segs: [{ t: "今日", r: "きょう" }, { t: "は" }, { t: "一日中", r: "はいちにちじゅう" }, { t: "雨", r: "あめ" }, { t: "だった" }] },
+    ], log);
+    expect(log.rejected[0]).toMatchObject({ run: "一日中", why: "reading swallowed the kana in front of it" });
+    // ...and the good half of the same reply is still recorded as applied.
+    expect(log.applied).toContainEqual({ line: 0, run: "雨", from: "う", to: "あめ" });
+  });
+
+  it("stays silent when no log is passed", () => {
+    const lines = ["星"];
+    const base = [[{ t: "星", r: "ほし" }]];
+    expect(() => applyRevisions(base, lines, [{ i: 0, segs: [{ t: "星", r: "ぼし" }] }])).not.toThrow();
   });
 });

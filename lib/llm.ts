@@ -300,7 +300,8 @@ async function runPool<T>(
   model: string,
   messages: Message[],
   signal: AbortSignal,
-  expect?: number
+  expect?: number,
+  reasoningEffort: ReasoningEffort = "none"
 ): Promise<T> {
   if (keys.length === 0) throw new Error("no OrcaRouter key available");
 
@@ -312,8 +313,10 @@ async function runPool<T>(
     // need no chain-of-thought. The free router otherwise picks a reasoning
     // model that burns ~14k "thinking" tokens on a full song and takes >60s
     // (blowing the timeout → 502). "none" cuts that to a couple of seconds.
-    // (Do NOT use "low": the free tier rejects it with 402.)
-    reasoning_effort: "none",
+    // (Do NOT use "low" on the FREE tier: it rejects it with 402. The furigana
+    // correction pass is the one caller that raises this, and only on a paid
+    // model — proofreading is the one job here that is not mechanical.)
+    reasoning_effort: reasoningEffort,
   });
 
   // Longest cooldown any key reported, across rounds — decides whether retrying
@@ -450,6 +453,10 @@ async function runPool<T>(
 // working for a few cents instead of failing. If the fallback also fails we
 // surface the ORIGINAL free-tier error (so a guest sees "free's used up, paste
 // your key", never the owner's billing problem).
+// How hard the model should think. Everything here is mechanical and uses
+// "none"; only the furigana correction pass raises it.
+export type ReasoningEffort = "none" | "low" | "medium" | "high";
+
 export async function llmJSON<T>(opts: {
   messages: Message[];
   keys: string[];
@@ -460,21 +467,23 @@ export async function llmJSON<T>(opts: {
   // for per-line tasks so a truncated reply is retried instead of silently
   // blanking the rest of the song.
   expect?: number;
+  // Defaults to "none" — see runPool.
+  reasoningEffort?: ReasoningEffort;
 }): Promise<T> {
-  const { messages, keys, model = MODEL, fallback, expect } = opts;
+  const { messages, keys, model = MODEL, fallback, expect, reasoningEffort } = opts;
   // A caller-supplied signal (or the default timeout) bounds the TOTAL time —
   // the primary attempt and any paid fallback share this one budget.
   const signal = opts.signal ?? AbortSignal.timeout(TIMEOUT_MS);
 
   try {
-    return await runPool<T>(keys, model, messages, signal, expect);
+    return await runPool<T>(keys, model, messages, signal, expect, reasoningEffort);
   } catch (primary) {
     // Fall back to the paid pool only when the FREE pool itself couldn't serve.
     const freeCouldNotServe =
       primary instanceof LlmFreeExhausted || primary instanceof LlmRateLimited;
     if (fallback && freeCouldNotServe) {
       try {
-        return await runPool<T>(fallback.keys, fallback.model, messages, signal, expect);
+        return await runPool<T>(fallback.keys, fallback.model, messages, signal, expect, reasoningEffort);
       } catch (fb) {
         // The fallback failed too. When it spent the CALLER'S own key, its failure
         // is theirs to see and act on ("add credits"), so surface it directly.

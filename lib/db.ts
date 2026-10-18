@@ -272,7 +272,7 @@ export function clearRejectedLyrics(videoId: string): void {
 //    the model echoes back (romaji, translation), instead of by position in the
 //    reply. Rows written by version 1 can hold a reading shifted onto the wrong
 //    lines — which reads as perfectly fluent text, so nobody would think to hit
-//    ↻ Re-translate on it. They have to go.
+//    ↻ Refresh with AI on it. They have to go.
 const READING_CACHE_VERSION = 3;
 
 function hasColumn(table: string, column: string): boolean {

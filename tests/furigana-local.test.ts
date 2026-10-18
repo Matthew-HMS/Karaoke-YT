@@ -87,6 +87,25 @@ describe("furiganaLinesLocal", () => {
   );
 
   it(
+    "reads counters written with half-width digits",
+    async () => {
+      const [one, two] = await furiganaLinesLocal(["1人でむせて", "2人で歩く"]);
+      expect(readingOf(one, "1人")).toBe("ひとり"); // not にん
+      expect(readingOf(two, "2人")).toBe("ふたり");
+    },
+    DICT_TIMEOUT
+  );
+
+  it(
+    "voices a compound IPADIC splits in two (rendaku)",
+    async () => {
+      const [ichibanboshi] = await furiganaLinesLocal(["一番星を掻き消すような"]);
+      expect(readingOf(ichibanboshi, "一番星")).toBe("いちばんぼし"); // not いちばん + ほし
+    },
+    DICT_TIMEOUT
+  );
+
+  it(
     "annotates a line a model previously left bare",
     async () => {
       // 当たり前 came back with no reading from the model on a real song.

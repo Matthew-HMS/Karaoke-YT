@@ -6,7 +6,7 @@
 
 import type { FuriganaSegment } from "@/lib/types";
 import { aiJSON, aiJSONBatch, chunk, skipBlankLines } from "./aiCall";
-import { llmJSON, type AiAccess } from "./llm";
+import { llmJSON, type AiAccess, type ReasoningEffort } from "./llm";
 import { getCachedFurigana, putCachedFurigana } from "./db";
 import { furiganaLinesLocal } from "./furiganaLocal";
 import { hasKana } from "./romanize";
@@ -339,6 +339,277 @@ async function repairDroppedLines(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// ↻ Re-generate: ask the model to CORRECT the dictionary reading, not to
+// replace it.
+//
+// Regenerating from scratch threw away a reading that was ~99.9% right and
+// re-ran every failure mode the model has: dropped lines, truncated replies,
+// run-to-run non-determinism. Reviewing is a far easier job than generating —
+// the model only has to spot the handful of readings a dictionary gets wrong in
+// context (愛おしい, 他の, 一人) — and because it returns ONLY the lines it is
+// changing, the reply is a few hundred tokens instead of a few thousand, which
+// is what made long songs truncate in the first place.
+//
+// The dictionary result is the floor: every correction must reconstruct its
+// line exactly AND annotate at least as many kanji as the dictionary already
+// did, so a re-generate can raise quality but never lower coverage.
+// ---------------------------------------------------------------------------
+
+const REVISE_SYSTEM = `You proofread Japanese furigana produced by the IPADIC morphological dictionary.
+Input: a JSON array of {"i":<line index>,"line":"<original line>","reading":"<the line with each kanji run's current reading in parentheses>"}.
+
+Check EVERY kanji run. The dictionary is right most of the time, but it fails in four specific ways, and these are what you are looking for:
+1. RENDAKU (連濁): it reads a compound as separate words, so the second element stays unvoiced. 山桜 as やま+さくら instead of やまざくら; 風車 as かぜ+くるま instead of かざぐるま. Whenever two kanji words sit together as one compound, ask whether the second one voices.
+2. ON/KUN picked from the wrong context: a kanji that takes its kun reading alone but an on reading in a compound, or the reverse. 人 as じん inside a word but ひと alone; 日 as にち vs ひ.
+3. Counters and set phrases read literally: 一人 as いちにん rather than ひとり.
+4. A kanji run left with NO reading at all — give it one.
+
+Reply with ONLY a JSON array of the lines you are changing:
+[{"i":<index>,"segs":[{"t":"<text>"},{"t":"<kanji run>","r":"<hiragana reading>"}]}]
+Rules:
+- Return ONLY changed lines. Reply [] only when you have checked every run and every one is right — [] is a claim that the whole input is correct, so do not use it to skip the work.
+- Concatenating a line's segment "t" values MUST equal that line's "line" exactly.
+- Only kanji get "r", written in hiragana. Never put "r" on kana.
+- Never drop a reading that is already present — only fix it or add a missing one.
+- You may regroup segments: if the dictionary split a compound, return it as one run with the compound reading.
+- No prose, no code fences.`;
+
+// Lines per correction call. Chunking here is driven by the INPUT, not the
+// reply (which holds only the changed lines): the longer the list handed over,
+// the more the model skims it. Measured on a 74-line song, same model and
+// prompt, chunks running concurrently — 120 lines in one chunk: 17.4s and 0
+// corrections; 60: 12-20s and 0-1; 25: 12-13s and 1-2, both genuine (1人 read
+// as にん, 観 as かん). Smaller is faster AND finds more, because the chunks
+// overlap: the song costs about what its slowest chunk costs, not their sum.
+const REVISE_CHUNK_LINES = 25;
+
+// Per-song cap on the correction detail written to the log, so one bad reply
+// cannot bury the rest of the output.
+const LOG_LIMIT = 12;
+
+const HIRAGANA_ONLY = /^[぀-ゟー]+$/;
+const KANA_RE = /[぀-ゟ゠-ヿ]/;
+
+// A run may carry a reading when it holds kanji and NO kana. "Pure kanji" was
+// too strict: the model correctly proposed 1人 → ひとり and the half-width
+// digit got the whole line thrown out. What must never happen is ruby drawn
+// over kana (を掻き消すような) — the annotation then covers text that is
+// already readable, and lands in the wrong place.
+const canCarryReading = (t: string) => KANJI_RE.test(t) && !KANA_RE.test(t);
+
+// Reject a "correction" that just swallowed the kana sitting in front of the
+// run: the model returned 一日中(はいちにちじゅう) for 今日は一日中雨 — the
+// dictionary's いちにちじゅう with the preceding は glued on. It reconstructs,
+// it is all-kanji, it keeps coverage, and it is still wrong, so the shape of
+// the mistake is what identifies it: the new reading ENDS with the old one and
+// the extra head is exactly the text just before the run.
+function swallowedNeighbour(
+  before: string,
+  run: string,
+  reading: string,
+  base: FuriganaSegment[]
+): boolean {
+  const old = base.find((s) => s.t === run && s.r)?.r;
+  if (!old || reading === old || !reading.endsWith(old)) return false;
+  const extra = reading.slice(0, reading.length - old.length);
+  return before.endsWith(extra);
+}
+
+// "君(きみ)が僕(ぼく)に見(み)せてくれた" — compact enough to send a whole song,
+// and the model reads it without having to parse segment objects.
+function renderReading(segs: FuriganaSegment[]): string {
+  return segs.map((s) => (s.r ? `${s.t}(${s.r})` : s.t)).join("");
+}
+
+function annotatedKanji(segs: FuriganaSegment[]): number {
+  let n = 0;
+  for (const s of segs) {
+    if (!s.r) continue;
+    for (const ch of s.t) if (KANJI_RE.test(ch)) n++;
+  }
+  return n;
+}
+
+// What the correction pass did, so a recurring fix can be promoted into
+// furiganaLocal's OVERRIDES — where it becomes free and deterministic — and so
+// a model that is proposing nonsense is visible rather than silently filtered.
+export type RevisionLog = {
+  applied: { line: number; run: string; from: string; to: string }[];
+  rejected: { line: number; run: string; to: string; why: string }[];
+};
+
+// Readings that differ between two segmentations of the same line, keyed by
+// position so the same kanji twice in a line stays distinct.
+function readingChanges(
+  before: FuriganaSegment[],
+  after: FuriganaSegment[]
+): { run: string; from: string; to: string }[] {
+  const at = (segs: FuriganaSegment[]) => {
+    const m = new Map<string, { run: string; reading: string }>();
+    let off = 0;
+    for (const s of segs) {
+      if (s.r) m.set(`${off}:${s.t}`, { run: s.t, reading: s.r });
+      off += s.t.length;
+    }
+    return m;
+  };
+  const a = at(before);
+  const out: { run: string; from: string; to: string }[] = [];
+  for (const [key, got] of at(after)) {
+    const had = a.get(key);
+    if (!had) out.push({ run: got.run, from: "", to: got.reading });
+    else if (had.reading !== got.reading) out.push({ run: got.run, from: had.reading, to: got.reading });
+  }
+  return out;
+}
+
+// Merge the model's corrections onto the dictionary reading. Every correction
+// is checked independently and silently dropped if it fails, so a bad reply
+// degrades to the dictionary result rather than corrupting it. Exported for tests.
+export function applyRevisions(
+  base: FuriganaSegment[][],
+  lines: string[],
+  raw: unknown,
+  log?: RevisionLog
+): FuriganaSegment[][] {
+  if (!Array.isArray(raw)) return base;
+  const out = base.slice();
+
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const i = (item as { i?: unknown }).i;
+    if (typeof i !== "number" || !Number.isInteger(i) || i < 0 || i >= lines.length) continue;
+
+    const segs = cleanSegments((item as { segs?: unknown }).segs);
+    if (segs.length === 0) continue;
+
+    // Must reconstruct the line exactly (respace tolerates only whitespace drift).
+    const raw2 = respace(segs, lines[i]);
+    if (!raw2) {
+      log?.rejected.push({ line: i, run: lines[i], to: "", why: "does not reconstruct the line" });
+      continue;
+    }
+
+    // Readings are checked one run at a time, and a bad one falls back to the
+    // dictionary's own reading for that run instead of condemning the line: the
+    // model bundles good and bad corrections into the same reply, and throwing
+    // the line away loses the good one too. Measured on one line, the model
+    // returned a correct 雨(あめ) next to a wrong 一日中(はいちにちじゅう).
+    const placed = raw2.map((s, idx) => {
+      if (!s.r) return s;
+      const before = raw2.slice(0, idx).map((x) => x.t).join("");
+      const why = !HIRAGANA_ONLY.test(s.r)
+        ? "reading is not kana"
+        : !canCarryReading(s.t)
+          ? "reading sits on a run containing kana"
+          : swallowedNeighbour(before, s.t, s.r, out[i])
+            ? "reading swallowed the kana in front of it"
+            : null;
+      if (!why) return s;
+      log?.rejected.push({ line: i, run: s.t, to: s.r, why });
+      const fromDictionary = out[i].find((x) => x.t === s.t && x.r)?.r;
+      return fromDictionary ? { t: s.t, r: fromDictionary } : { t: s.t };
+    });
+
+    // The invariant that makes this safe: a correction may raise coverage or
+    // leave it alone, never reduce it.
+    if (annotatedKanji(placed) < annotatedKanji(out[i])) {
+      log?.rejected.push({
+        line: i,
+        run: lines[i],
+        to: renderReading(placed),
+        why: "would annotate fewer kanji than the dictionary did",
+      });
+      continue;
+    }
+
+    // Sanitising can leave adjacent bare runs; respace merges them back into
+    // one plain segment so the line renders as few spans as possible.
+    const merged = respace(placed, lines[i]) ?? placed;
+    if (log) for (const change of readingChanges(out[i], merged)) log.applied.push({ line: i, ...change });
+    out[i] = merged;
+  }
+  return out;
+}
+
+async function reviseFurigana(
+  videoId: string,
+  base: FuriganaSegment[][],
+  lines: string[],
+  opts: { access: AiAccess; clientId: string }
+): Promise<FuriganaSegment[][]> {
+  // Only lines that can carry a reading are worth a correction pass.
+  const candidates: { i: number; line: string; reading: string }[] = [];
+  lines.forEach((line, i) => {
+    if (KANJI_RE.test(line)) candidates.push({ i, line, reading: renderReading(base[i]) });
+  });
+  if (candidates.length === 0) return base;
+
+  // Indices travel with each item, so chunks need no offset bookkeeping.
+  const batches = chunk(candidates, REVISE_CHUNK_LINES);
+  const messages = batches.map((batch) => [
+    { role: "system" as const, content: REVISE_SYSTEM },
+    { role: "user" as const, content: JSON.stringify(batch) },
+  ]);
+
+  // Every other call here is mechanical and runs at reasoning_effort "none".
+  // Proofreading is not: measured over five live runs at "none", the model
+  // changed nothing four times and once returned two correct fixes alongside
+  // two malformed ones. So this one call thinks — but only on a paid model,
+  // because the free tier rejects any effort above "none" with a 402.
+  //
+  // Thinking costs ~6-8s a chunk, so the chunks go out CONCURRENTLY (`parallel`
+  // below): sequentially a 74-line song took 22s, past the client's ~20s
+  // budget. Sending it as one larger chunk was faster but the model skimmed it
+  // and found nothing, so the answer is more chunks at once, not bigger ones.
+  const effort: ReasoningEffort = opts.access.model.includes("free")
+    ? "none"
+    : (process.env.FURIGANA_REVISE_EFFORT as ReasoningEffort) || "low";
+
+  let raws: (unknown | null)[];
+  try {
+    raws = await aiJSONBatch<unknown>({
+      access: opts.access,
+      clientId: opts.clientId,
+      batches: messages,
+      reasoningEffort: effort,
+      parallel: true,
+    });
+  } catch (e) {
+    if (effort === "none") throw e;
+    // An upstream that refuses the raised effort must not cost the singer their
+    // ↻; fall back to the setting every other call uses.
+    console.warn(`[furigana] revise at effort="${effort}" failed, retrying with none:`, e);
+    raws = await aiJSONBatch<unknown>({
+      access: opts.access,
+      clientId: opts.clientId,
+      batches: messages,
+      parallel: true,
+    });
+  }
+
+  const log: RevisionLog = { applied: [], rejected: [] };
+  let out = base;
+  for (const raw of raws) if (raw !== null) out = applyRevisions(out, lines, raw, log);
+
+  // One line per song, then the detail. The applied list is the useful one:
+  // a reading that keeps coming back belongs in furiganaLocal's OVERRIDES,
+  // where it costs nothing and cannot regress. The rejected list is how you
+  // notice the model drifting into malformed replies.
+  console.log(
+    `[furigana] revise ${videoId} model=${opts.access.model} effort=${effort} ` +
+      `applied=${log.applied.length} rejected=${log.rejected.length}`
+  );
+  for (const a of log.applied.slice(0, LOG_LIMIT)) {
+    console.log(`[furigana]   L${a.line} ${a.run}: ${a.from || "(none)"} -> ${a.to}`);
+  }
+  for (const r of log.rejected.slice(0, LOG_LIMIT)) {
+    console.warn(`[furigana]   L${r.line} ${r.run} refused (${r.why})${r.to ? `: ${r.to}` : ""}`);
+  }
+  return out;
+}
+
 // Furigana for a song's lyric lines (one segment array per line), or null when
 // the song isn't Japanese so callers can skip rendering. Cached in SQLite.
 export async function furiganaLines(
@@ -381,31 +652,49 @@ async function annotate(
     }
   }
 
-  // DICTIONARY FIRST. kuromoji annotates ~99.9% of kanji offline in ~33ms with
-  // no key, no quota and no network, and its reconstruction guard did not trip
-  // once over the whole local library — so the model is reserved for the two
-  // things it is genuinely better at: an explicit ↻ re-roll (`refresh`, handled
-  // above by skipping this branch) and repairing the lines left bare, which the
-  // cache-hit path upgrades on a later visit. Set FURIGANA_ENGINE=llm to put
-  // the model back in front.
-  if (!opts.refresh && process.env.FURIGANA_ENGINE !== "llm") {
+  // DICTIONARY FIRST, for both paths. kuromoji annotates ~99.9% of kanji
+  // offline in ~33ms with no key, no quota and no network, and its
+  // reconstruction guard did not trip once over the whole local library. A
+  // normal visit stops there; ↻ re-generate hands that result to the model as a
+  // CORRECTION task (reviseFurigana) rather than asking for the song again, so
+  // the model can only improve on the dictionary, never undercut its coverage.
+  // Set FURIGANA_ENGINE=llm to put the model back in front.
+  let baseline: FuriganaSegment[][] | null = null;
+  if (process.env.FURIGANA_ENGINE !== "llm") {
     try {
-      const local = await furiganaLinesLocal(lines);
-      const gaps = droppedLineIndexes(local, lines).length;
+      baseline = await furiganaLinesLocal(lines);
+      const gaps = droppedLineIndexes(baseline, lines).length;
       const kanjiLines = lines.filter((l) => KANJI_RE.test(l)).length;
-      // Accept unless the dictionary essentially failed on this song (an unusual
-      // script, heavy ateji), in which case the model is the better bet.
-      if (gaps * 2 <= kanjiLines) {
-        // Stored one short of the cap, like a fresh model reading, so a later
-        // visit may spend ONE repair call on whatever came back bare.
-        putCachedFurigana(videoId, local, src, MAX_ATTEMPTS - 1);
-        return local;
+      // Give up on the dictionary only if it essentially failed on this song
+      // (an unusual script, heavy ateji) — then the model is the better bet.
+      if (gaps * 2 > kanjiLines) {
+        console.warn(`[furigana] dictionary left ${gaps}/${kanjiLines} lines bare, asking the model`);
+        baseline = null;
       }
-      console.warn(`[furigana] dictionary left ${gaps}/${kanjiLines} lines bare, asking the model`);
     } catch (e) {
       // A missing or unreadable dictionary must not take readings down with it.
       console.warn("[furigana] dictionary unavailable, falling back to the model:", e);
+      baseline = null;
     }
+  }
+
+  if (baseline && !opts.refresh) {
+    // Stored one short of the cap, like a fresh model reading, so a later visit
+    // may spend ONE repair call on whatever came back bare.
+    putCachedFurigana(videoId, baseline, src, MAX_ATTEMPTS - 1);
+    return baseline;
+  }
+
+  if (baseline) {
+    // ↻ re-generate. A failure here propagates: the singer asked for the model,
+    // and the reading already on screen is this same baseline, so the UI's
+    // "AI unavailable, retry" note loses them nothing. The previously cached
+    // row is left intact for the next ordinary visit.
+    const revised = await reviseFurigana(videoId, baseline, lines, opts);
+    // At the cap: the model has now had its look, so later visits shouldn't
+    // spend another call chasing the few runs it chose to leave bare.
+    putCachedFurigana(videoId, revised, src, MAX_ATTEMPTS);
+    return revised;
   }
 
   const prompt = (batch: string[]) => [

@@ -134,8 +134,8 @@ async function translate(
 
   // Cached even if a chunk came back empty. Not caching it meant the whole song
   // re-ran on every visit, which costs far more than the blank range is worth.
-  // Anything the repair pass above could not fill stays blank; ↻ Re-translate
-  // (which bypasses the cache) is the way to re-roll it.
+  // Anything the repair pass above could not fill stays blank; ↻ Refresh with
+  // AI (which bypasses the cache) is the way to re-roll it.
   putCachedTranslation(videoId, lang, out, src);
   return out;
 }

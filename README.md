@@ -90,6 +90,10 @@ personal favourites.
   under each line, so you can sing along to a Japanese song you can't read.
   Furigana is generated **offline** by a Japanese dictionary, so it needs no API
   key and works instantly; romaji still uses the AI key.
+- **↻ Refresh with AI** re-runs whichever aids are on — the reading *and* the
+  translation — for the current song. For furigana it asks the AI to correct the
+  dictionary's reading rather than replace it, so a refresh can fix a wrong
+  reading without losing the ones that were already right.
 - **🌏 Translation** — pick a language and see what each line means under it.
 - **⚐ Report** lyrics that are plainly wrong (signed-in users), and the app
   looks for a better match next time. The host screen can **↩ Restore** a

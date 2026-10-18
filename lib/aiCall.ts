@@ -11,7 +11,7 @@
 // paid fallback (resolveAccess → access.fallback) serves a "free" call, it still
 // counts toward the limit — it's the owner's money, so cap it like any free use.
 
-import { llmJSON, type AiAccess } from "./llm";
+import { llmJSON, type AiAccess, type ReasoningEffort } from "./llm";
 import { aiUsageCount, bumpAiUsage } from "./db";
 
 // How many free AI calls an identity gets on the shared server key.
@@ -35,8 +35,10 @@ export async function aiJSON<T>(opts: {
   messages: Message[];
   // Lines the reply must cover; a shorter array is retried (see lib/llm.ts).
   expect?: number;
+  // Defaults to "none"; raised only by the furigana correction pass.
+  reasoningEffort?: ReasoningEffort;
 }): Promise<T> {
-  const { access, clientId, messages, expect } = opts;
+  const { access, clientId, messages, expect, reasoningEffort } = opts;
 
   // Enforce the free quota up front (so a blocked call never hits the network).
   if (access.mode === "free" && aiUsageCount(clientId) >= AI_FREE_LIMIT) {
@@ -49,6 +51,7 @@ export async function aiJSON<T>(opts: {
     fallback: access.fallback,
     messages,
     expect,
+    reasoningEffort,
   });
 
   // Only a successful call spends a free use.
@@ -216,35 +219,70 @@ export async function aiJSONBatch<T>(opts: {
   batches: Message[][];
   // Lines each batch must cover, aligned with `batches`.
   expect?: number[];
+  // Defaults to "none"; raised only by the furigana correction pass.
+  reasoningEffort?: ReasoningEffort;
+  // Run the chunks concurrently instead of one after another. Off by default:
+  // sequential is gentler on the free tier's per-minute limit, and for the
+  // generate paths latency is dominated by output size anyway. The furigana
+  // correction pass opts in because it thinks (~6-8s a chunk) while returning
+  // almost nothing, so sequential chunks walk straight past the client's ~20s
+  // budget — a 74-line song measured 22s sequentially. Concurrent, the whole
+  // song costs about what its slowest chunk costs.
+  parallel?: boolean;
 }): Promise<(T | null)[]> {
-  const { access, clientId, batches, expect } = opts;
+  const { access, clientId, batches, expect, reasoningEffort, parallel } = opts;
 
   if (access.mode === "free" && aiUsageCount(clientId) >= AI_FREE_LIMIT) {
     throw new AiQuotaExceeded();
   }
 
+  const call = (messages: Message[], i: number) =>
+    llmJSON<T>({
+      keys: access.keys,
+      model: access.model,
+      fallback: access.fallback,
+      messages,
+      expect: expect?.[i],
+      reasoningEffort,
+    });
+
   const out: (T | null)[] = [];
   let served = 0;
   let lastError: unknown;
-  for (const [i, messages] of batches.entries()) {
-    try {
-      out.push(
-        await llmJSON<T>({
-          keys: access.keys,
-          model: access.model,
-          fallback: access.fallback,
-          messages,
-          expect: expect?.[i],
-        })
-      );
-      served++;
-    } catch (err) {
-      // Quota and key problems apply to every chunk — pressing on would just
-      // repeat the same failure and, for a quota error, spend uses we don't
-      // have. Only a per-reply failure is worth continuing past.
-      if (err instanceof AiQuotaExceeded) throw err;
-      lastError = err;
-      out.push(null);
+
+  if (parallel) {
+    // allSettled keeps the batches in order, which callers rely on to map a
+    // chunk back to its lines. Note the one semantic difference from the
+    // sequential path: every chunk is already in flight, so a failure cannot
+    // stop the others from being spent.
+    for (const result of await Promise.all(
+      batches.map((messages, i) => call(messages, i).then(
+        (value) => ({ ok: true as const, value }),
+        (err) => ({ ok: false as const, err })
+      ))
+    )) {
+      if (result.ok) {
+        out.push(result.value);
+        served++;
+      } else {
+        if (result.err instanceof AiQuotaExceeded) throw result.err;
+        lastError = result.err;
+        out.push(null);
+      }
+    }
+  } else {
+    for (const [i, messages] of batches.entries()) {
+      try {
+        out.push(await call(messages, i));
+        served++;
+      } catch (err) {
+        // Quota and key problems apply to every chunk — pressing on would just
+        // repeat the same failure and, for a quota error, spend uses we don't
+        // have. Only a per-reply failure is worth continuing past.
+        if (err instanceof AiQuotaExceeded) throw err;
+        lastError = err;
+        out.push(null);
+      }
     }
   }
 
