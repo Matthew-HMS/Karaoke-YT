@@ -10,6 +10,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   FavoritesTab,
   PasswordGate,
@@ -22,11 +23,15 @@ import {
   type Tab,
 } from "@/components/SongTabs";
 import { ControlsMenu } from "@/components/ControlsMenu";
-import { SettingsOverlay } from "@/components/SettingsOverlay";
 import { useMicPitch } from "@/lib/useMicPitch";
 import { useRoom } from "@/lib/useRoom";
 import { useSongLibrary } from "@/lib/useSongLibrary";
 import { useWakeLock } from "@/lib/useWakeLock";
+
+// Settings is rarely opened: keep it out of the first-load bundle.
+const SettingsOverlay = dynamic(() =>
+  import("@/components/SettingsOverlay").then((m) => m.SettingsOverlay),
+);
 
 export default function RemotePage() {
   const code = String(useParams().room || "").toUpperCase();
@@ -79,6 +84,9 @@ export default function RemotePage() {
 
   const [tab, setTab] = useState<Tab>("search");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Mount on first open, then stay mounted so the exit animation plays.
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  if (settingsOpen && !settingsMounted) setSettingsMounted(true);
 
   // Favorites (★), add-to-queue + "added" toast — shared with host. The singer
   // name (persisted) doubles as the identity stamped on pitch samples, so the
@@ -257,12 +265,14 @@ export default function RemotePage() {
       </AnimatePresence>
 
       {/* ⚙ Settings: AI key + feature toggles + the Target-line toggle. */}
-      <SettingsOverlay
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        showTarget={showTarget}
-        onToggleTarget={(v) => setShowTarget(v)}
-      />
+      {settingsMounted && (
+        <SettingsOverlay
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          showTarget={showTarget}
+          onToggleTarget={(v) => setShowTarget(v)}
+        />
+      )}
 
       {/* One floating menu: Sing (mic + name) + Reactions. Shared with the host
           so both surfaces are identical. */}

@@ -12,6 +12,7 @@ import { signIn, signOut, useSession } from "next-auth/react";
 import { useParams } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   FavoritesTab,
   PasswordGate,
@@ -24,12 +25,9 @@ import {
   type Tab,
 } from "@/components/SongTabs";
 import { ControlsMenu, VolumeIcon } from "@/components/ControlsMenu";
-import { SettingsOverlay } from "@/components/SettingsOverlay";
-import { HostTour, type TourStep } from "@/components/HostTour";
+import type { TourStep } from "@/components/HostTour";
 import { PitchRibbon } from "@/components/PitchRibbon";
 import { ScoreCard } from "@/components/ScoreCard";
-import { SpinnerWheel } from "@/components/SpinnerWheel";
-import { WhatsNewModal } from "@/components/WhatsNewModal";
 import { PlayerHandle, YouTubePlayer } from "@/components/YouTubePlayer";
 import type { SingerScore } from "@/lib/pitch";
 import { formatTime } from "@/lib/format";
@@ -50,6 +48,21 @@ import {
   setOnboarded,
 } from "@/lib/onboarding";
 import { APP_VERSION, CHANGELOG, isNewerVersion } from "@/lib/version";
+
+// Overlays that most sessions never open: split out of the first-load bundle
+// and only fetched once they're actually needed (see the latches below).
+const SettingsOverlay = dynamic(() =>
+  import("@/components/SettingsOverlay").then((m) => m.SettingsOverlay),
+);
+const HostTour = dynamic(() =>
+  import("@/components/HostTour").then((m) => m.HostTour),
+);
+const SpinnerWheel = dynamic(() =>
+  import("@/components/SpinnerWheel").then((m) => m.SpinnerWheel),
+);
+const WhatsNewModal = dynamic(() =>
+  import("@/components/WhatsNewModal").then((m) => m.WhatsNewModal),
+);
 
 // Safari still exposes fullscreen only under webkit-prefixed names.
 type FsDocument = Document & {
@@ -123,6 +136,10 @@ export default function HostPage() {
 
   const [tab, setTab] = useState<Tab>("search");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Mount (and so fetch) the settings overlay on first open, then keep it
+  // mounted so its exit animation still plays on close.
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  if (settingsOpen && !settingsMounted) setSettingsMounted(true);
   const playerRef = useRef<PlayerHandle>(null);
 
   // The host can be a phone too, so it gets the same mic-pitch capture as a
@@ -425,6 +442,9 @@ export default function HostPage() {
   const roomReady = resolved && (isCreator || joined);
   const [showTour, setShowTour] = useState(false);
   const [whatsNew, setWhatsNew] = useState<typeof CHANGELOG>([]);
+  // Same latch as settings: only fetch the modal if there's news to show.
+  const [whatsNewMounted, setWhatsNewMounted] = useState(false);
+  if (whatsNew.length > 0 && !whatsNewMounted) setWhatsNewMounted(true);
 
   // First-run tour steps. Each points at a `[data-tour="..."]` anchor; some
   // switch tabs first so the anchor is on screen. Memoized (stable identity) so
@@ -964,13 +984,15 @@ export default function HostPage() {
           </div>
 
           {/* ⚙ Settings: AI key + feature toggles + the Target-line toggle. */}
-          <SettingsOverlay
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-            showTarget={showTarget}
-            onToggleTarget={(v) => setShowTarget(v)}
-            onReplayTour={replayTour}
-          />
+          {settingsMounted && (
+            <SettingsOverlay
+              open={settingsOpen}
+              onClose={() => setSettingsOpen(false)}
+              showTarget={showTarget}
+              onToggleTarget={(v) => setShowTarget(v)}
+              onReplayTour={replayTour}
+            />
+          )}
 
           {/* Same floating menu as the phone (the host can be a phone too):
               Sing + Reactions. Anchored to this side panel. */}
@@ -1006,15 +1028,19 @@ export default function HostPage() {
 
       {/* Random-singer wheel — full-screen so it shows over the video even in
           fullscreen. The TV plays the drumroll + applause; phones stay silent. */}
-      <SpinnerWheel
-        spin={wheelSpin}
-        onSpinStart={() => playSfx("drumroll")}
-        onLand={() => playSfx("applause")}
-      />
+      {wheelSpin && (
+        <SpinnerWheel
+          spin={wheelSpin}
+          onSpinStart={() => playSfx("drumroll")}
+          onLand={() => playSfx("applause")}
+        />
+      )}
 
       {/* First-run guided tour + post-update "what's new" (host-only, per-device). */}
       {showTour && <HostTour steps={tourSteps} onDone={finishTour} />}
-      <WhatsNewModal entries={whatsNew} onDismiss={dismissWhatsNew} />
+      {whatsNewMounted && (
+        <WhatsNewModal entries={whatsNew} onDismiss={dismissWhatsNew} />
+      )}
     </main>
   );
 }

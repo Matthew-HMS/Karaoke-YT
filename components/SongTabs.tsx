@@ -72,7 +72,15 @@ export function SongRow({
   const [expanded, setExpanded] = useState(false);
   return (
     <li className="flex items-center gap-3 rounded-xl bg-white/5 p-2">
-      <img src={song.thumbnail} alt="" className="h-12 w-20 rounded object-cover" />
+      <img
+        src={song.thumbnail}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        width={80}
+        height={48}
+        className="h-12 w-20 rounded object-cover"
+      />
       <button
         type="button"
         // Tap the title to toggle the full (un-clamped) name.
@@ -1208,6 +1216,10 @@ function QueueRow({
       <img
         src={item.thumbnail}
         alt=""
+        loading="lazy"
+        decoding="async"
+        width={64}
+        height={40}
         className="h-10 w-16 rounded object-cover"
       />
       <div className="min-w-0 flex-1">
