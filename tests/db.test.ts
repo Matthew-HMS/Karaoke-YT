@@ -185,4 +185,25 @@ describe("lyrics cache + sync offset", () => {
     clearRejectedLyrics("vid-oops");
     expect(getCachedLyrics("vid-oops")?.rejected).toEqual([]);
   });
+
+  it("clearRejectedLyrics brings back the original even after a replacement was found", () => {
+    const other = { ...result, lines: [{ timeSec: 0, text: "the wrong song" }] };
+    putCachedLyrics("vid-swap", result); // original match A
+    rejectLyrics("vid-swap", "sigA");
+    putCachedLyrics("vid-swap", other); // re-fetch found B
+    rejectLyrics("vid-swap", "sigB"); // B reported too — must not replace A as the original
+    putCachedLyrics("vid-swap", other);
+    clearRejectedLyrics("vid-swap");
+    const cached = getCachedLyrics("vid-swap");
+    expect(cached?.result).toEqual(result); // A again, not B
+    expect(cached?.rejected).toEqual([]);
+    expect(cached?.fetchedAt).toBeGreaterThan(0);
+  });
+
+  it("clearRejectedLyrics with nothing saved falls back to a re-query", () => {
+    rejectLyrics("vid-none", "x"); // reported with nothing cached
+    putCachedLyrics("vid-none", null);
+    clearRejectedLyrics("vid-none");
+    expect(getCachedLyrics("vid-none")?.fetchedAt).toBe(0);
+  });
 });

@@ -159,6 +159,8 @@ export function removeFavorite(userId: string, videoId: string): void {
 // music video's intro/outro drift stays corrected across future plays.
 // `rejected` is a JSON array of signatures for lyric matches a user reported as
 // wrong; getLyrics excludes them so a re-fetch finds a DIFFERENT match.
+// `original` keeps the match that was showing when the FIRST report came in, so
+// ↩ Restore can put exactly that back (see clearRejectedLyrics).
 db.exec(`
   CREATE TABLE IF NOT EXISTS lyrics (
     videoId   TEXT PRIMARY KEY,
@@ -178,6 +180,9 @@ if (!lyricsCols.some((c) => c.name === "offset")) {
 }
 if (!lyricsCols.some((c) => c.name === "rejected")) {
   db.exec(`ALTER TABLE lyrics ADD COLUMN rejected TEXT`);
+}
+if (!lyricsCols.some((c) => c.name === "original")) {
+  db.exec(`ALTER TABLE lyrics ADD COLUMN original TEXT`);
 }
 
 const getLyricsStmt = db.prepare(
@@ -238,11 +243,14 @@ export function setLyricsOffset(videoId: string, offset: number): void {
 
 // Report the cached lyrics as wrong: remember this match's `signature` so it's
 // skipped, clear the stored data, and reset fetchedAt to 0 so the next lookup
-// re-queries the providers and finds a DIFFERENT match.
+// re-queries the providers and finds a DIFFERENT match. The data being cleared
+// is kept in `original` on the first report only (COALESCE): reporting the
+// replacement too must not overwrite the match Restore should bring back.
 const rejectLyricsStmt = db.prepare(
   `INSERT INTO lyrics (videoId, data, fetchedAt, rejected)
    VALUES (@videoId, NULL, 0, @rejected)
-   ON CONFLICT(videoId) DO UPDATE SET data = NULL, fetchedAt = 0, rejected = @rejected`
+   ON CONFLICT(videoId) DO UPDATE SET
+     original = COALESCE(original, data), data = NULL, fetchedAt = 0, rejected = @rejected`
 );
 
 export function rejectLyrics(videoId: string, signature: string): void {
@@ -251,15 +259,27 @@ export function rejectLyrics(videoId: string, signature: string): void {
   rejectLyricsStmt.run({ videoId, rejected: JSON.stringify(current) });
 }
 
-// Recovery for a mistaken report: forget all reported-wrong signatures for a
-// video and reset fetchedAt so the next lookup re-queries (and can return a
-// previously-rejected match again).
+// Recovery for a mistaken report: forget all reported-wrong signatures and put
+// the originally-shown match back as the cached result.
+//
+// It has to replace `data`, not just reset fetchedAt: getLyrics serves any
+// cached result without looking at fetchedAt, so when the post-report lookup
+// had found a replacement, the old "clear rejected, re-query" restore kept
+// serving that replacement and the original never came back. Restoring the
+// saved copy also costs no provider call and can't land on yet another match.
+// With no saved copy (the report came in when nothing was cached) it falls back
+// to a forced re-query.
 const clearRejectedLyricsStmt = db.prepare(
-  `UPDATE lyrics SET rejected = NULL, fetchedAt = 0 WHERE videoId = ?`
+  `UPDATE lyrics SET
+     data = original,
+     fetchedAt = CASE WHEN original IS NULL THEN 0 ELSE @now END,
+     rejected = NULL,
+     original = NULL
+   WHERE videoId = @videoId`
 );
 
 export function clearRejectedLyrics(videoId: string): void {
-  clearRejectedLyricsStmt.run(videoId);
+  clearRejectedLyricsStmt.run({ videoId, now: Date.now() });
 }
 
 // Bump when the reading pipeline changes in a way that makes old cached results
@@ -274,6 +294,12 @@ export function clearRejectedLyrics(videoId: string): void {
 //    lines — which reads as perfectly fluent text, so nobody would think to hit
 //    ↻ Refresh with AI on it. They have to go.
 const READING_CACHE_VERSION = 3;
+
+// The translation table's own version, bumped without re-running romaji and
+// furigana for every song. 4: the prompt now translates English mixed into
+// non-English lyrics (it used to be left as is), and Chinese translations are
+// forced into the chosen script — rows from before can hold either fault.
+const TRANSLATION_CACHE_VERSION = 4;
 
 function hasColumn(table: string, column: string): boolean {
   const cols = db.pragma(`table_info(${table})`) as { name: string }[];
@@ -438,7 +464,7 @@ export function getCachedTranslation(
   const row = getTranslationStmt.get(videoId, lang) as
     | { data: string; ver: number; src: string }
     | undefined;
-  if (!row || row.ver !== READING_CACHE_VERSION || row.src !== src) return null;
+  if (!row || row.ver !== TRANSLATION_CACHE_VERSION || row.src !== src) return null;
   return JSON.parse(row.data) as string[];
 }
 
@@ -461,7 +487,7 @@ export function putCachedTranslation(
     lang,
     data: JSON.stringify(lines),
     fetchedAt: Date.now(),
-    ver: READING_CACHE_VERSION,
+    ver: TRANSLATION_CACHE_VERSION,
   });
 }
 
@@ -477,10 +503,12 @@ export function putCachedTranslation(
 //
 // Safe to run on every boot and in every process: it only deletes rows that are
 // already unreadable, so a second run finds nothing.
-for (const table of ["romaji", "furigana", "translation"]) {
-  const { changes } = db
-    .prepare(`DELETE FROM ${table} WHERE ver != ?`)
-    .run(READING_CACHE_VERSION);
+for (const [table, ver] of [
+  ["romaji", READING_CACHE_VERSION],
+  ["furigana", READING_CACHE_VERSION],
+  ["translation", TRANSLATION_CACHE_VERSION],
+] as const) {
+  const { changes } = db.prepare(`DELETE FROM ${table} WHERE ver != ?`).run(ver);
   if (changes > 0) {
     console.log(`[db] dropped ${changes} ${table} row(s) from an older reading pipeline`);
   }

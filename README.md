@@ -95,6 +95,9 @@ personal favourites.
   dictionary's reading rather than replace it, so a refresh can fix a wrong
   reading without losing the ones that were already right.
 - **🌏 Translation** — pick a language and see what each line means under it.
+  Chinese translations always come out in the script you picked (Simplified
+  or Traditional), and a Chinese song in the other script just has its
+  characters converted, with no AI call.
 - **⚐ Report** lyrics that are plainly wrong (signed-in users), and the app
   looks for a better match next time. The host screen can **↩ Restore** a
   report that was a mistake.

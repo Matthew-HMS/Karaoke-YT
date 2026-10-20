@@ -16,6 +16,7 @@ import { linesHash, singleFlight } from "./singleflight";
 import type { AiAccess } from "./llm";
 import { getCachedTranslation, putCachedTranslation } from "./db";
 import { TRANSLATE_LANGS, type TranslateLang } from "./translateLangs";
+import { toSimplified, toTraditional } from "./chineseScript";
 
 export { TRANSLATE_LANGS, isTranslateLang } from "./translateLangs";
 export type { TranslateLang } from "./translateLangs";
@@ -42,15 +43,35 @@ export function alreadyInLang(lines: string[], lang: TranslateLang): boolean {
   return false; // en/es/fr/de: can't tell apart by script → always attempt
 }
 
-const SYSTEM = (langName: string) => `You translate song lyrics into ${langName}.
+// Free models drift between the two Chinese scripts unless told plainly, and
+// even then not always — see enforceScript for the guarantee.
+const SCRIPT_RULE: Partial<Record<TranslateLang, string>> = {
+  "zh-Hant": "- Write ONLY Traditional Chinese characters (繁體字, as used in Taiwan), never Simplified (简体字). Simplified Chinese and Japanese kanji are NOT Traditional Chinese — translate them.",
+  zh: "- Write ONLY Simplified Chinese characters (简体字), never Traditional (繁體字). Traditional Chinese and Japanese kanji are NOT Simplified Chinese — translate them.",
+};
+
+const SYSTEM = (lang: TranslateLang) => {
+  const langName = TRANSLATE_LANGS[lang].name;
+  return `You translate song lyrics into ${langName}.
 Rules:
 - Input is a JSON array of lyric lines, each written "<n>|<lyric>".
 - Reply with ONLY a JSON array of strings, each written "<n>|<translation>", no prose, no code fences.
 - Reuse the SAME <n> as the line you translated. One entry per input line, in order.
 - Never merge two input lines into one entry and never split one into two — if two lines read as one sentence, still answer them separately, each with its own <n>.
 - Punctuation-only or empty lines map to "<n>|".
-- If a line is already in ${langName}, return it unchanged.
-- Translate the MEANING into natural ${langName}, not word-for-word.`;
+- Translate EVERY part that is not ${langName}, whatever language it is in. Lyrics often mix languages (e.g. English phrases or whole English lines inside Japanese or Korean songs): translate the English too, never leave it as is. Only proper nouns (names, places, brands) may stay as written.
+- If a line is already entirely in ${langName}, return it unchanged.
+${SCRIPT_RULE[lang] ? SCRIPT_RULE[lang] + "\n" : ""}- Translate the MEANING into natural ${langName}, not word-for-word.`;
+};
+
+// The script half of SCRIPT_RULE, done by dictionary so it actually holds: any
+// Simplified character the model let through in a Traditional translation (or
+// the reverse) is converted. Not a translation — it never touches meaning.
+function enforceScript(lines: string[], lang: TranslateLang): string[] {
+  if (lang === "zh-Hant") return lines.map(toTraditional);
+  if (lang === "zh") return lines.map(toSimplified);
+  return lines;
+}
 
 // Force the LLM output back into an array the same length as `count`, so the
 // UI's index-based interleaving never drifts. Each reply entry says which line
@@ -69,7 +90,13 @@ export async function translateLines(
   lang: TranslateLang,
   opts: { access: AiAccess; clientId: string; refresh?: boolean }
 ): Promise<string[] | null> {
-  if (alreadyInLang(lines, lang)) return null; // already in target → nothing to show
+  if (alreadyInLang(lines, lang)) {
+    // A Chinese song in the other script (Simplified lyrics, Traditional chosen)
+    // only needs its characters converted — no model call. In the chosen script
+    // already → nothing to show.
+    const converted = enforceScript(lines, lang);
+    return converted.some((l, i) => l !== lines[i]) ? converted : null;
+  }
 
   const src = linesHash(lines);
   // One model call per (song, language) even with the whole room watching —
@@ -91,9 +118,8 @@ async function translate(
     if (cached && cached.length === lines.length) return cached; // cache hit → free
   }
 
-  const langName = TRANSLATE_LANGS[lang].name;
   const prompt = (batch: string[]) => [
-    { role: "system" as const, content: SYSTEM(langName) },
+    { role: "system" as const, content: SYSTEM(lang) },
     { role: "user" as const, content: JSON.stringify(numberLines(batch)) },
   ];
 
@@ -127,10 +153,11 @@ async function translate(
   // a cache hit never re-calls, so a gap left here is a gap for good.
   out = await repairIndexedGaps({
     access: opts.access,
-    system: SYSTEM(langName),
+    system: SYSTEM(lang),
     answers: out,
     lines,
   });
+  out = enforceScript(out, lang);
 
   // Cached even if a chunk came back empty. Not caching it meant the whole song
   // re-ran on every visit, which costs far more than the blank range is worth.

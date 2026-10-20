@@ -8,7 +8,8 @@ import {
   numberLines,
   repairIndexedGaps,
 } from "@/lib/aiCall";
-import { alignTranslation, alreadyInLang } from "@/lib/translate";
+import { alignTranslation, alreadyInLang, translateLines } from "@/lib/translate";
+import { toSimplified, toTraditional } from "@/lib/chineseScript";
 import { isTranslateLang } from "@/lib/translateLangs";
 import { hasKana, alignRomaji } from "@/lib/romanize";
 import { applyRevisions, coerceFurigana, droppedLineIndexes, type RevisionLog } from "@/lib/furigana";
@@ -207,6 +208,20 @@ describe("translation helpers", () => {
     // Latin-script targets: never auto-skip (can't tell apart by script)
     expect(alreadyInLang(["Hello world"], "en")).toBe(false);
     expect(alreadyInLang(["Hola mundo"], "es")).toBe(false);
+  });
+
+  it("converts Chinese script by dictionary, leaving other text alone", () => {
+    expect(toTraditional("我们的爱情 love")).toBe("我們的愛情 love");
+    expect(toSimplified("告白氣球")).toBe("告白气球");
+  });
+
+  it("a Chinese song in the other script is converted without a model call", async () => {
+    // `access` is never touched: the script conversion runs before any AI path.
+    const opts = { access: null as never, clientId: "t" };
+    expect(await translateLines("v", ["告白气球", ""], "zh-Hant", opts)).toEqual(["告白氣球", ""]);
+    expect(await translateLines("v", ["告白氣球"], "zh", opts)).toEqual(["告白气球"]);
+    // already in the chosen script → nothing to show
+    expect(await translateLines("v", ["告白氣球"], "zh-Hant", opts)).toBeNull();
   });
 });
 
